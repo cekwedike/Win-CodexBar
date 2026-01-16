@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CodexBar</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <span class="title">CodexBar</span>
+            <button class="refresh-btn" id="refreshBtn" title="Refresh">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M23 4v6h-6M1 20v-6h6"/>
+                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                </svg>
+            </button>
+        </div>
+
+        <div class="providers" id="providers">
+            <!-- Providers will be dynamically inserted here -->
+        </div>
+
+        <div class="footer">
+            <div class="footer-left">
+                <span class="last-updated" id="lastUpdated">Loading...</span>
+            </div>
+            <div class="footer-right">
+                <button class="footer-btn" id="cookiesBtn" title="Manual Cookies">Cookies</button>
+                <button class="footer-btn" id="settingsBtn">Settings</button>
+                <button class="footer-btn" id="aboutBtn" title="About">About</button>
+                <button class="footer-btn" id="quitBtn">Quit</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

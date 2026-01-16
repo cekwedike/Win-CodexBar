@@ -1,10 +1,61 @@
 //! Claude OAuth implementation
+//!
+//! Loads OAuth credentials from Claude CLI and fetches usage from the API.
 
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::Deserialize;
+use std::path::PathBuf;
 
-use crate::core::{OAuthCredentials, ProviderError, RateWindow};
+use crate::core::{ProviderError, RateWindow, UsageSnapshot, ProviderFetchResult};
+
+/// OAuth credentials from Claude CLI
+#[derive(Debug, Clone)]
+pub struct ClaudeOAuthCredentials {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub scopes: Vec<String>,
+    pub rate_limit_tier: Option<String>,
+}
+
+impl ClaudeOAuthCredentials {
+    /// Check if the token is expired
+    pub fn is_expired(&self) -> bool {
+        if let Some(expires_at) = self.expires_at {
+            // Consider expired if within 5 minutes of expiry
+            expires_at <= Utc::now() + chrono::Duration::minutes(5)
+        } else {
+            // No expiry info = don't assume expired, try it
+            false
+        }
+    }
+
+    /// Check if the credentials have a specific scope
+    pub fn has_scope(&self, scope: &str) -> bool {
+        self.scopes.iter().any(|s| s == scope)
+    }
+}
+
+/// Raw JSON structure from Claude CLI credentials file
+#[derive(Debug, Deserialize)]
+struct CredentialsFile {
+    #[serde(rename = "claudeAiOauth")]
+    claude_ai_oauth: Option<OAuthData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OAuthData {
+    #[serde(rename = "accessToken")]
+    access_token: Option<String>,
+    #[serde(rename = "refreshToken")]
+    refresh_token: Option<String>,
+    #[serde(rename = "expiresAt")]
+    expires_at: Option<f64>, // milliseconds since epoch
+    scopes: Option<Vec<String>>,
+    #[serde(rename = "rateLimitTier")]
+    rate_limit_tier: Option<String>,
+}
 
 /// OAuth usage response from Claude API
 #[derive(Debug, Deserialize)]
@@ -56,6 +107,9 @@ pub struct ClaudeOAuthFetcher {
 
 impl ClaudeOAuthFetcher {
     const USAGE_URL: &'static str = "https://api.claude.ai/api/usage";
+    const CREDENTIALS_PATH: &'static str = ".claude/.credentials.json";
+    const ENV_TOKEN_KEY: &'static str = "CODEXBAR_CLAUDE_OAUTH_TOKEN";
+    const ENV_SCOPES_KEY: &'static str = "CODEXBAR_CLAUDE_OAUTH_SCOPES";
 
     pub fn new() -> Self {
         Self {
@@ -63,10 +117,115 @@ impl ClaudeOAuthFetcher {
         }
     }
 
+    /// Load credentials and fetch usage
+    pub async fn fetch(&self) -> Result<ProviderFetchResult, ProviderError> {
+        let credentials = self.load_credentials()?;
+        let usage_response = self.fetch_usage(&credentials).await?;
+        let usage = self.build_usage_snapshot(&usage_response, &credentials);
+        Ok(ProviderFetchResult::new(usage, "oauth"))
+    }
+
+    /// Load OAuth credentials from environment or file
+    pub fn load_credentials(&self) -> Result<ClaudeOAuthCredentials, ProviderError> {
+        // Try environment variables first
+        if let Some(creds) = self.load_from_environment() {
+            return Ok(creds);
+        }
+
+        // Try credentials file
+        self.load_from_file()
+    }
+
+    /// Load credentials from environment variables
+    fn load_from_environment(&self) -> Option<ClaudeOAuthCredentials> {
+        let token = std::env::var(Self::ENV_TOKEN_KEY).ok()?;
+        let token = token.trim();
+        if token.is_empty() {
+            return None;
+        }
+
+        let scopes: Vec<String> = std::env::var(Self::ENV_SCOPES_KEY)
+            .ok()
+            .map(|s| {
+                s.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_else(|| vec!["user:profile".to_string()]);
+
+        Some(ClaudeOAuthCredentials {
+            access_token: token.to_string(),
+            refresh_token: None,
+            expires_at: None, // Environment tokens don't expire
+            scopes,
+            rate_limit_tier: None,
+        })
+    }
+
+    /// Load credentials from ~/.claude/.credentials.json
+    fn load_from_file(&self) -> Result<ClaudeOAuthCredentials, ProviderError> {
+        let path = self.credentials_path()?;
+
+        if !path.exists() {
+            return Err(ProviderError::OAuth(
+                "Claude OAuth credentials not found. Run `claude` to authenticate.".to_string(),
+            ));
+        }
+
+        let content = std::fs::read_to_string(&path).map_err(|e| {
+            ProviderError::OAuth(format!("Failed to read credentials file: {}", e))
+        })?;
+
+        let file: CredentialsFile = serde_json::from_str(&content).map_err(|e| {
+            ProviderError::OAuth(format!("Invalid credentials format: {}", e))
+        })?;
+
+        let oauth = file.claude_ai_oauth.ok_or_else(|| {
+            ProviderError::OAuth(
+                "Claude OAuth credentials missing. Run `claude` to authenticate.".to_string(),
+            )
+        })?;
+
+        let access_token = oauth.access_token.ok_or_else(|| {
+            ProviderError::OAuth(
+                "Claude OAuth access token missing. Run `claude` to authenticate.".to_string(),
+            )
+        })?;
+
+        let access_token = access_token.trim().to_string();
+        if access_token.is_empty() {
+            return Err(ProviderError::OAuth(
+                "Claude OAuth access token is empty. Run `claude` to authenticate.".to_string(),
+            ));
+        }
+
+        // Convert milliseconds to DateTime
+        let expires_at = oauth.expires_at.map(|millis| {
+            let secs = (millis / 1000.0) as i64;
+            DateTime::from_timestamp(secs, 0).unwrap_or_else(Utc::now)
+        });
+
+        Ok(ClaudeOAuthCredentials {
+            access_token,
+            refresh_token: oauth.refresh_token,
+            expires_at,
+            scopes: oauth.scopes.unwrap_or_default(),
+            rate_limit_tier: oauth.rate_limit_tier,
+        })
+    }
+
+    /// Get the credentials file path
+    fn credentials_path(&self) -> Result<PathBuf, ProviderError> {
+        dirs::home_dir()
+            .map(|home| home.join(Self::CREDENTIALS_PATH))
+            .ok_or_else(|| ProviderError::OAuth("Could not find home directory".to_string()))
+    }
+
     /// Fetch usage data using OAuth credentials
     pub async fn fetch_usage(
         &self,
-        credentials: &OAuthCredentials,
+        credentials: &ClaudeOAuthCredentials,
     ) -> Result<OAuthUsageResponse, ProviderError> {
         if credentials.is_expired() {
             return Err(ProviderError::OAuth(
@@ -75,7 +234,7 @@ impl ClaudeOAuthFetcher {
         }
 
         // Check for required scope
-        if !credentials.has_scope("user:profile") {
+        if !credentials.scopes.is_empty() && !credentials.has_scope("user:profile") {
             return Err(ProviderError::OAuth(format!(
                 "OAuth token missing 'user:profile' scope (has: {}). Run `claude setup-token` to regenerate.",
                 credentials.scopes.join(", ")
@@ -86,12 +245,19 @@ impl ClaudeOAuthFetcher {
             .client
             .get(Self::USAGE_URL)
             .header("Authorization", format!("Bearer {}", credentials.access_token))
+            .timeout(std::time::Duration::from_secs(10))
             .send()
             .await?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
+
+            if status.as_u16() == 401 {
+                return Err(ProviderError::OAuth(
+                    "OAuth token invalid or expired. Run `claude` to re-authenticate.".to_string(),
+                ));
+            }
 
             if status.as_u16() == 403 && body.contains("user:profile") {
                 return Err(ProviderError::OAuth(
@@ -113,8 +279,45 @@ impl ClaudeOAuthFetcher {
         Ok(usage)
     }
 
+    /// Build UsageSnapshot from OAuth response
+    fn build_usage_snapshot(
+        &self,
+        response: &OAuthUsageResponse,
+        credentials: &ClaudeOAuthCredentials,
+    ) -> UsageSnapshot {
+        // Primary: 5-hour session window
+        let primary = response
+            .five_hour
+            .as_ref()
+            .and_then(|w| Self::to_rate_window(w, Some(300)))
+            .unwrap_or_else(|| RateWindow::new(0.0));
+
+        let mut usage = UsageSnapshot::new(primary);
+
+        // Secondary: 7-day window
+        if let Some(weekly) = response.seven_day.as_ref().and_then(|w| Self::to_rate_window(w, Some(10080))) {
+            usage = usage.with_secondary(weekly);
+        }
+
+        // Model-specific: Opus or Sonnet
+        if let Some(opus) = response.seven_day_opus.as_ref().and_then(|w| Self::to_rate_window(w, Some(10080))) {
+            usage = usage.with_model_specific(opus);
+        } else if let Some(sonnet) = response.seven_day_sonnet.as_ref().and_then(|w| Self::to_rate_window(w, Some(10080))) {
+            usage = usage.with_model_specific(sonnet);
+        }
+
+        // Login method from rate limit tier or default
+        if let Some(ref tier) = credentials.rate_limit_tier {
+            usage = usage.with_login_method(tier);
+        } else {
+            usage = usage.with_login_method("Claude (OAuth)");
+        }
+
+        usage
+    }
+
     /// Convert OAuth usage window to RateWindow
-    pub fn to_rate_window(window: &UsageWindow, window_minutes: Option<u32>) -> Option<RateWindow> {
+    fn to_rate_window(window: &UsageWindow, window_minutes: Option<u32>) -> Option<RateWindow> {
         let utilization = window.utilization?;
 
         let resets_at = window
@@ -156,51 +359,4 @@ fn parse_iso8601_date(s: &str) -> Option<DateTime<Utc>> {
 /// Format a reset date for display
 fn format_reset_date(date: DateTime<Utc>) -> String {
     date.format("%b %-d at %-I:%M%p").to_string()
-}
-
-/// Credential store location for Claude OAuth
-pub struct ClaudeCredentialStore;
-
-impl ClaudeCredentialStore {
-    const SERVICE: &'static str = "codexbar-claude";
-    const KEY: &'static str = "oauth";
-
-    /// Load OAuth credentials from storage
-    #[cfg(windows)]
-    pub fn load() -> Result<OAuthCredentials, ProviderError> {
-        use crate::core::{CredentialStore, WindowsCredentialStore};
-
-        let store = WindowsCredentialStore::new();
-        let json = store
-            .get(Self::SERVICE, Self::KEY)
-            .map_err(|e| ProviderError::OAuth(format!("Failed to load credentials: {}", e)))?;
-
-        serde_json::from_str(&json)
-            .map_err(|e| ProviderError::OAuth(format!("Invalid credential format: {}", e)))
-    }
-
-    /// Save OAuth credentials to storage
-    #[cfg(windows)]
-    pub fn save(credentials: &OAuthCredentials) -> Result<(), ProviderError> {
-        use crate::core::{CredentialStore, WindowsCredentialStore};
-
-        let store = WindowsCredentialStore::new();
-        let json = serde_json::to_string(credentials)
-            .map_err(|e| ProviderError::OAuth(format!("Failed to serialize credentials: {}", e)))?;
-
-        store
-            .set(Self::SERVICE, Self::KEY, &json)
-            .map_err(|e| ProviderError::OAuth(format!("Failed to save credentials: {}", e)))
-    }
-
-    /// Delete stored credentials
-    #[cfg(windows)]
-    pub fn delete() -> Result<(), ProviderError> {
-        use crate::core::{CredentialStore, WindowsCredentialStore};
-
-        let store = WindowsCredentialStore::new();
-        store
-            .delete(Self::SERVICE, Self::KEY)
-            .map_err(|e| ProviderError::OAuth(format!("Failed to delete credentials: {}", e)))
-    }
 }

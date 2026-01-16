@@ -15,11 +15,13 @@ use crate::core::{
 };
 
 pub use web_api::ClaudeWebApiFetcher;
+pub use oauth::ClaudeOAuthFetcher;
 
 /// Claude provider implementation
 pub struct ClaudeProvider {
     metadata: ProviderMetadata,
     web_fetcher: ClaudeWebApiFetcher,
+    oauth_fetcher: ClaudeOAuthFetcher,
 }
 
 impl ClaudeProvider {
@@ -38,6 +40,7 @@ impl ClaudeProvider {
                 status_page_url: Some("https://status.anthropic.com"),
             },
             web_fetcher: ClaudeWebApiFetcher::new(),
+            oauth_fetcher: ClaudeOAuthFetcher::new(),
         }
     }
 }
@@ -105,12 +108,7 @@ impl Provider for ClaudeProvider {
 impl ClaudeProvider {
     async fn fetch_via_oauth(&self, _ctx: &FetchContext) -> Result<ProviderFetchResult, ProviderError> {
         tracing::debug!("Attempting OAuth fetch for Claude");
-
-        // TODO: Implement OAuth fetching with stored credentials
-        // For now, return error to fall through to web API
-        Err(ProviderError::OAuth(
-            "OAuth credentials not available".to_string(),
-        ))
+        self.oauth_fetcher.fetch().await
     }
 
     async fn fetch_via_web(&self, ctx: &FetchContext) -> Result<ProviderFetchResult, ProviderError> {

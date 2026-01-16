@@ -25,6 +25,8 @@ pub enum ProviderId {
     VertexAI,
     Augment,
     OpenCode,
+    Kimi,
+    KimiK2,
 }
 
 impl ProviderId {
@@ -44,6 +46,8 @@ impl ProviderId {
             ProviderId::VertexAI,
             ProviderId::Augment,
             ProviderId::OpenCode,
+            ProviderId::Kimi,
+            ProviderId::KimiK2,
         ]
     }
 
@@ -63,6 +67,8 @@ impl ProviderId {
             ProviderId::VertexAI => "vertexai",
             ProviderId::Augment => "augment",
             ProviderId::OpenCode => "opencode",
+            ProviderId::Kimi => "kimi",
+            ProviderId::KimiK2 => "kimik2",
         }
     }
 
@@ -82,6 +88,8 @@ impl ProviderId {
             ProviderId::VertexAI => "Vertex AI",
             ProviderId::Augment => "Augment",
             ProviderId::OpenCode => "OpenCode",
+            ProviderId::Kimi => "Kimi",
+            ProviderId::KimiK2 => "Kimi K2",
         }
     }
 
@@ -101,6 +109,8 @@ impl ProviderId {
             "vertexai" | "vertex" => Some(ProviderId::VertexAI),
             "augment" => Some(ProviderId::Augment),
             "opencode" => Some(ProviderId::OpenCode),
+            "kimi" | "moonshot" => Some(ProviderId::Kimi),
+            "kimik2" | "kimi-k2" | "k2" => Some(ProviderId::KimiK2),
             _ => None,
         }
     }
@@ -324,9 +334,11 @@ mod tests {
     #[test]
     fn test_provider_id_all() {
         let all = ProviderId::all();
-        assert_eq!(all.len(), 13);
+        assert_eq!(all.len(), 15);
         assert!(all.contains(&ProviderId::Claude));
         assert!(all.contains(&ProviderId::Codex));
+        assert!(all.contains(&ProviderId::Kimi));
+        assert!(all.contains(&ProviderId::KimiK2));
     }
 
     #[test]

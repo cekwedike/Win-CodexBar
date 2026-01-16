@@ -8,13 +8,14 @@
 mod browser;
 mod cli;
 mod core;
+mod cost_scanner;
 mod logging;
+mod native_ui;
 mod notifications;
 mod providers;
 mod settings;
 mod single_instance;
 mod status;
-mod tauri_app;
 mod tray;
 
 use clap::Parser;
@@ -76,8 +77,8 @@ fn run() -> i32 {
                 }
             };
 
-            // Launch the Tauri-based menu bar GUI
-            match tauri_app::run() {
+            // Launch the native egui menu bar GUI
+            match native_ui::run() {
                 Ok(()) => exit_codes::SUCCESS,
                 Err(e) => {
                     eprintln!("Error: {}", e);

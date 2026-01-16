@@ -18,6 +18,10 @@ pub enum NotificationType {
     Exhausted,
     /// Provider status issue
     StatusIssue,
+    /// Session quota depleted (at 100% usage)
+    SessionDepleted,
+    /// Session quota restored (back from 100%)
+    SessionRestored,
 }
 
 impl NotificationType {
@@ -27,6 +31,8 @@ impl NotificationType {
             NotificationType::CriticalUsage => "Critical Usage Alert",
             NotificationType::Exhausted => "Usage Limit Reached",
             NotificationType::StatusIssue => "Provider Status Issue",
+            NotificationType::SessionDepleted => "Session Depleted",
+            NotificationType::SessionRestored => "Session Restored",
         }
     }
 
@@ -36,6 +42,8 @@ impl NotificationType {
             NotificationType::CriticalUsage => "🔴",
             NotificationType::Exhausted => "🚫",
             NotificationType::StatusIssue => "⚡",
+            NotificationType::SessionDepleted => "🔴",
+            NotificationType::SessionRestored => "✅",
         }
     }
 }
@@ -44,12 +52,15 @@ impl NotificationType {
 pub struct NotificationManager {
     /// Track which notifications have been sent to avoid spam
     sent_notifications: std::collections::HashSet<(ProviderId, NotificationType)>,
+    /// Track previous session percent for depleted/restored transitions
+    previous_session_percent: std::collections::HashMap<ProviderId, f64>,
 }
 
 impl NotificationManager {
     pub fn new() -> Self {
         Self {
             sent_notifications: std::collections::HashSet::new(),
+            previous_session_percent: std::collections::HashMap::new(),
         }
     }
 
@@ -99,6 +110,50 @@ impl NotificationManager {
         self.sent_notifications.remove(&(provider, NotificationType::StatusIssue));
     }
 
+    /// Check session quota transitions (depleted/restored)
+    /// Call this with each usage update to detect transitions
+    pub fn check_session_transition(
+        &mut self,
+        provider: ProviderId,
+        current_percent: f64,
+        settings: &Settings,
+    ) {
+        if !settings.show_notifications {
+            return;
+        }
+
+        const DEPLETED_THRESHOLD: f64 = 99.99; // Consider depleted at 99.99%+
+
+        let previous_percent = self.previous_session_percent.get(&provider).copied().unwrap_or(0.0);
+
+        // Check for depleted transition: was not depleted, now is
+        if previous_percent < DEPLETED_THRESHOLD && current_percent >= DEPLETED_THRESHOLD {
+            let title = NotificationType::SessionDepleted.title();
+            let body = format!(
+                "{} session depleted. 0% left. Will notify when available again.",
+                provider.display_name()
+            );
+            self.show_toast(title, &body);
+            self.sent_notifications.insert((provider, NotificationType::SessionDepleted));
+        }
+        // Check for restored transition: was depleted, now is not
+        else if previous_percent >= DEPLETED_THRESHOLD && current_percent < DEPLETED_THRESHOLD {
+            // Only notify restored if we previously sent a depleted notification
+            if self.sent_notifications.contains(&(provider, NotificationType::SessionDepleted)) {
+                let title = NotificationType::SessionRestored.title();
+                let body = format!(
+                    "{} session restored. Session quota is available again.",
+                    provider.display_name()
+                );
+                self.show_toast(title, &body);
+                self.sent_notifications.remove(&(provider, NotificationType::SessionDepleted));
+            }
+        }
+
+        // Update the tracked previous percent
+        self.previous_session_percent.insert(provider, current_percent);
+    }
+
     /// Send a Windows toast notification
     fn send_notification(&self, provider: ProviderId, used_percent: f64, notif_type: NotificationType) {
         let title = notif_type.title();
@@ -114,6 +169,12 @@ impl NotificationManager {
             }
             NotificationType::StatusIssue => {
                 format!("{} is experiencing issues", provider.display_name())
+            }
+            NotificationType::SessionDepleted => {
+                format!("{} session depleted. 0% left.", provider.display_name())
+            }
+            NotificationType::SessionRestored => {
+                format!("{} session restored. Quota available again.", provider.display_name())
             }
         };
 

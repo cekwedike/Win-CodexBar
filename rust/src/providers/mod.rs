@@ -1,0 +1,30 @@
+//! Provider implementations
+
+#![allow(dead_code)]
+
+pub mod antigravity;
+pub mod augment;
+pub mod claude;
+pub mod codex;
+pub mod copilot;
+pub mod cursor;
+pub mod factory;
+pub mod gemini;
+pub mod kiro;
+pub mod minimax;
+pub mod vertexai;
+pub mod zai;
+
+// Re-export provider implementations
+pub use antigravity::AntigravityProvider;
+pub use augment::AugmentProvider;
+pub use claude::ClaudeProvider;
+pub use codex::CodexProvider;
+pub use copilot::CopilotProvider;
+pub use cursor::CursorProvider;
+pub use factory::FactoryProvider;
+pub use gemini::GeminiProvider;
+pub use kiro::KiroProvider;
+pub use minimax::MiniMaxProvider;
+pub use vertexai::VertexAIProvider;
+pub use zai::ZaiProvider;

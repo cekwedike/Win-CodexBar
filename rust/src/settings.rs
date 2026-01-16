@@ -1,0 +1,357 @@
+//! Settings management for CodexBar
+//!
+//! Handles persistent configuration including:
+//! - Enabled/disabled providers
+//! - Refresh interval
+//! - Manual cookies
+//! - Other user preferences
+
+#![allow(dead_code)]
+
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+
+use crate::core::ProviderId;
+
+/// Application settings
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    /// Enabled provider IDs (by CLI name)
+    pub enabled_providers: HashSet<String>,
+
+    /// Refresh interval in seconds
+    pub refresh_interval_secs: u64,
+
+    /// Whether to start minimized
+    pub start_minimized: bool,
+
+    /// Whether to show notifications
+    pub show_notifications: bool,
+
+    /// High usage threshold for warnings (percentage)
+    pub high_usage_threshold: f64,
+
+    /// Critical usage threshold for alerts (percentage)
+    pub critical_usage_threshold: f64,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        let mut enabled = HashSet::new();
+        // Default enabled providers
+        enabled.insert("claude".to_string());
+        enabled.insert("codex".to_string());
+
+        Self {
+            enabled_providers: enabled,
+            refresh_interval_secs: 300, // 5 minutes
+            start_minimized: false,
+            show_notifications: true,
+            high_usage_threshold: 70.0,
+            critical_usage_threshold: 90.0,
+        }
+    }
+}
+
+impl Settings {
+    /// Get the settings file path
+    pub fn settings_path() -> Option<PathBuf> {
+        dirs::config_dir().map(|p| p.join("CodexBar").join("settings.json"))
+    }
+
+    /// Load settings from disk
+    pub fn load() -> Self {
+        if let Some(path) = Self::settings_path() {
+            if path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    if let Ok(settings) = serde_json::from_str(&content) {
+                        return settings;
+                    }
+                }
+            }
+        }
+        Self::default()
+    }
+
+    /// Save settings to disk
+    pub fn save(&self) -> anyhow::Result<()> {
+        let path = Self::settings_path()
+            .ok_or_else(|| anyhow::anyhow!("Could not determine settings path"))?;
+
+        // Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(&path, json)?;
+
+        Ok(())
+    }
+
+    /// Check if a provider is enabled
+    pub fn is_provider_enabled(&self, id: ProviderId) -> bool {
+        self.enabled_providers.contains(id.cli_name())
+    }
+
+    /// Enable a provider
+    pub fn enable_provider(&mut self, id: ProviderId) {
+        self.enabled_providers.insert(id.cli_name().to_string());
+    }
+
+    /// Disable a provider
+    pub fn disable_provider(&mut self, id: ProviderId) {
+        self.enabled_providers.remove(id.cli_name());
+    }
+
+    /// Toggle a provider's enabled state
+    pub fn toggle_provider(&mut self, id: ProviderId) -> bool {
+        let name = id.cli_name().to_string();
+        if self.enabled_providers.contains(&name) {
+            self.enabled_providers.remove(&name);
+            false
+        } else {
+            self.enabled_providers.insert(name);
+            true
+        }
+    }
+
+    /// Get list of enabled provider IDs
+    pub fn get_enabled_provider_ids(&self) -> Vec<ProviderId> {
+        ProviderId::all()
+            .iter()
+            .filter(|id| self.is_provider_enabled(**id))
+            .copied()
+            .collect()
+    }
+
+    /// Get all available providers with their enabled status
+    pub fn get_all_providers_status(&self) -> Vec<ProviderStatus> {
+        ProviderId::all()
+            .iter()
+            .map(|id| ProviderStatus {
+                id: id.cli_name().to_string(),
+                name: id.display_name().to_string(),
+                enabled: self.is_provider_enabled(*id),
+            })
+            .collect()
+    }
+}
+
+/// Provider status for settings UI
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderStatus {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+}
+
+/// Refresh interval options
+#[derive(Debug, Clone, Serialize)]
+pub struct RefreshIntervalOption {
+    pub value: u64,
+    pub label: String,
+}
+
+/// Get available refresh interval options
+pub fn get_refresh_interval_options() -> Vec<RefreshIntervalOption> {
+    vec![
+        RefreshIntervalOption { value: 60, label: "1 minute".to_string() },
+        RefreshIntervalOption { value: 120, label: "2 minutes".to_string() },
+        RefreshIntervalOption { value: 300, label: "5 minutes".to_string() },
+        RefreshIntervalOption { value: 600, label: "10 minutes".to_string() },
+        RefreshIntervalOption { value: 900, label: "15 minutes".to_string() },
+        RefreshIntervalOption { value: 1800, label: "30 minutes".to_string() },
+    ]
+}
+
+/// Manual cookie storage
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ManualCookies {
+    /// Provider ID -> cookie header mapping
+    pub cookies: HashMap<String, ManualCookieEntry>,
+}
+
+/// A single manual cookie entry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManualCookieEntry {
+    pub cookie_header: String,
+    pub saved_at: String,
+}
+
+impl ManualCookies {
+    /// Get the cookies file path
+    pub fn cookies_path() -> Option<PathBuf> {
+        dirs::config_dir().map(|p| p.join("CodexBar").join("manual_cookies.json"))
+    }
+
+    /// Load manual cookies from disk
+    pub fn load() -> Self {
+        if let Some(path) = Self::cookies_path() {
+            if path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    if let Ok(cookies) = serde_json::from_str(&content) {
+                        return cookies;
+                    }
+                }
+            }
+        }
+        Self::default()
+    }
+
+    /// Save manual cookies to disk
+    pub fn save(&self) -> anyhow::Result<()> {
+        let path = Self::cookies_path()
+            .ok_or_else(|| anyhow::anyhow!("Could not determine cookies path"))?;
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(&path, json)?;
+
+        Ok(())
+    }
+
+    /// Get cookie for a provider
+    pub fn get(&self, provider_id: &str) -> Option<&str> {
+        self.cookies.get(provider_id).map(|e| e.cookie_header.as_str())
+    }
+
+    /// Set cookie for a provider
+    pub fn set(&mut self, provider_id: &str, cookie_header: &str) {
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M").to_string();
+        self.cookies.insert(
+            provider_id.to_string(),
+            ManualCookieEntry {
+                cookie_header: cookie_header.to_string(),
+                saved_at: now,
+            },
+        );
+    }
+
+    /// Remove cookie for a provider
+    pub fn remove(&mut self, provider_id: &str) {
+        self.cookies.remove(provider_id);
+    }
+
+    /// Get all saved cookies for UI display
+    pub fn get_all_for_display(&self) -> Vec<SavedCookieInfo> {
+        self.cookies
+            .iter()
+            .map(|(id, entry)| {
+                let provider_name = ProviderId::from_cli_name(id)
+                    .map(|p| p.display_name().to_string())
+                    .unwrap_or_else(|| id.clone());
+
+                SavedCookieInfo {
+                    provider_id: id.clone(),
+                    provider: provider_name,
+                    saved_at: entry.saved_at.clone(),
+                }
+            })
+            .collect()
+    }
+}
+
+/// Info about a saved cookie for UI display
+#[derive(Debug, Clone, Serialize)]
+pub struct SavedCookieInfo {
+    pub provider_id: String,
+    pub provider: String,
+    pub saved_at: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_settings_default() {
+        let settings = Settings::default();
+        assert!(settings.enabled_providers.contains("claude"));
+        assert!(settings.enabled_providers.contains("codex"));
+        assert_eq!(settings.refresh_interval_secs, 300);
+        assert!(settings.show_notifications);
+        assert_eq!(settings.high_usage_threshold, 70.0);
+        assert_eq!(settings.critical_usage_threshold, 90.0);
+    }
+
+    #[test]
+    fn test_settings_provider_enabled() {
+        let settings = Settings::default();
+        assert!(settings.is_provider_enabled(ProviderId::Claude));
+        assert!(settings.is_provider_enabled(ProviderId::Codex));
+        assert!(!settings.is_provider_enabled(ProviderId::Gemini));
+    }
+
+    #[test]
+    fn test_settings_toggle_provider() {
+        let mut settings = Settings::default();
+
+        // Claude starts enabled
+        assert!(settings.is_provider_enabled(ProviderId::Claude));
+
+        // Toggle off
+        let enabled = settings.toggle_provider(ProviderId::Claude);
+        assert!(!enabled);
+        assert!(!settings.is_provider_enabled(ProviderId::Claude));
+
+        // Toggle back on
+        let enabled = settings.toggle_provider(ProviderId::Claude);
+        assert!(enabled);
+        assert!(settings.is_provider_enabled(ProviderId::Claude));
+    }
+
+    #[test]
+    fn test_settings_get_enabled_provider_ids() {
+        let settings = Settings::default();
+        let enabled = settings.get_enabled_provider_ids();
+        assert!(enabled.contains(&ProviderId::Claude));
+        assert!(enabled.contains(&ProviderId::Codex));
+    }
+
+    #[test]
+    fn test_settings_get_all_providers_status() {
+        let settings = Settings::default();
+        let status = settings.get_all_providers_status();
+        assert_eq!(status.len(), 12); // All 12 providers
+
+        let claude_status = status.iter().find(|s| s.id == "claude").unwrap();
+        assert_eq!(claude_status.name, "Claude");
+        assert!(claude_status.enabled);
+
+        let gemini_status = status.iter().find(|s| s.id == "gemini").unwrap();
+        assert!(!gemini_status.enabled);
+    }
+
+    #[test]
+    fn test_refresh_interval_options() {
+        let options = get_refresh_interval_options();
+        assert!(!options.is_empty());
+        assert!(options.iter().any(|o| o.value == 60));
+        assert!(options.iter().any(|o| o.value == 300));
+    }
+
+    #[test]
+    fn test_manual_cookies_default() {
+        let cookies = ManualCookies::default();
+        assert!(cookies.cookies.is_empty());
+    }
+
+    #[test]
+    fn test_manual_cookies_set_get_remove() {
+        let mut cookies = ManualCookies::default();
+
+        // Set a cookie
+        cookies.set("claude", "session=abc123");
+        assert_eq!(cookies.get("claude"), Some("session=abc123"));
+
+        // Remove it
+        cookies.remove("claude");
+        assert_eq!(cookies.get("claude"), None);
+    }
+}

@@ -1,10 +1,14 @@
 //! Kiro provider implementation
 //!
-//! Fetches usage data from AWS Kiro (Amazon's AI coding assistant)
-//! Kiro uses AWS credentials for authentication
+//! Fetches usage data from Kiro (Amazon's AI coding assistant)
+//! Uses kiro-cli for authentication and usage fetching
 
 use async_trait::async_trait;
+use chrono::Datelike;
 use std::path::PathBuf;
+use std::process::Stdio;
+use tokio::process::Command;
+use regex_lite::Regex;
 
 use crate::core::{
     FetchContext, Provider, ProviderId, ProviderError, ProviderFetchResult,
@@ -48,151 +52,283 @@ impl KiroProvider {
 
     /// Find Kiro CLI binary
     fn which_kiro() -> Option<PathBuf> {
-        let possible_paths = [
-            which::which("kiro").ok(),
-            #[cfg(target_os = "windows")]
-            dirs::data_local_dir().map(|p| p.join("Programs").join("Kiro").join("kiro.exe")),
-            #[cfg(target_os = "windows")]
-            Some(PathBuf::from("C:\\Program Files\\Kiro\\kiro.exe")),
-            #[cfg(not(target_os = "windows"))]
-            None,
-        ];
+        // Try kiro-cli first (the official CLI name)
+        if let Ok(path) = which::which("kiro-cli") {
+            return Some(path);
+        }
+        // Fall back to kiro
+        if let Ok(path) = which::which("kiro") {
+            return Some(path);
+        }
 
-        possible_paths.into_iter().flatten().find(|p| p.exists())
-    }
-
-    /// Read AWS/Kiro credentials
-    async fn read_credentials(&self) -> Result<(String, String), ProviderError> {
-        // Check Kiro-specific config first
-        let kiro_config = Self::get_kiro_config_path()
-            .ok_or_else(|| ProviderError::NotInstalled("Kiro config not found".to_string()))?;
-
-        let creds_file = kiro_config.join("credentials");
-        if creds_file.exists() {
-            let content = tokio::fs::read_to_string(&creds_file).await
-                .map_err(|e| ProviderError::Other(e.to_string()))?;
-
-            // Parse INI-style credentials file
-            let mut access_key = None;
-            let mut secret_key = None;
-
-            for line in content.lines() {
-                let line = line.trim();
-                if line.starts_with("aws_access_key_id") {
-                    access_key = line.split('=').nth(1).map(|s| s.trim().to_string());
-                } else if line.starts_with("aws_secret_access_key") {
-                    secret_key = line.split('=').nth(1).map(|s| s.trim().to_string());
+        #[cfg(target_os = "windows")]
+        {
+            let possible_paths = [
+                dirs::data_local_dir().map(|p| p.join("Programs").join("Kiro").join("kiro-cli.exe")),
+                Some(PathBuf::from("C:\\Program Files\\Kiro\\kiro-cli.exe")),
+            ];
+            for path in possible_paths.into_iter().flatten() {
+                if path.exists() {
+                    return Some(path);
                 }
-            }
-
-            if let (Some(ak), Some(sk)) = (access_key, secret_key) {
-                return Ok((ak, sk));
             }
         }
 
-        // Fall back to AWS credentials
-        let aws_creds = dirs::home_dir()
-            .map(|p| p.join(".aws").join("credentials"));
+        None
+    }
 
-        if let Some(aws_file) = aws_creds {
-            if aws_file.exists() {
-                let content = tokio::fs::read_to_string(&aws_file).await
-                    .map_err(|e| ProviderError::Other(e.to_string()))?;
+    /// Check if user is logged in by running `kiro-cli whoami`
+    async fn ensure_logged_in(&self) -> Result<(), ProviderError> {
+        let cli_path = Self::which_kiro().ok_or_else(|| {
+            ProviderError::NotInstalled("kiro-cli not found. Install from https://kiro.dev".to_string())
+        })?;
 
-                let mut access_key = None;
-                let mut secret_key = None;
+        let output = Command::new(&cli_path)
+            .arg("whoami")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| ProviderError::Other(format!("Failed to run kiro-cli: {}", e)))?;
 
-                for line in content.lines() {
-                    let line = line.trim();
-                    if line.starts_with("aws_access_key_id") {
-                        access_key = line.split('=').nth(1).map(|s| s.trim().to_string());
-                    } else if line.starts_with("aws_secret_access_key") {
-                        secret_key = line.split('=').nth(1).map(|s| s.trim().to_string());
+        let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+        let combined = format!("{} {}", stdout, stderr);
+
+        if combined.contains("not logged in") || combined.contains("login required") {
+            return Err(ProviderError::AuthRequired);
+        }
+
+        if !output.status.success() {
+            return Err(ProviderError::Other(format!(
+                "kiro-cli whoami failed with status {}",
+                output.status.code().unwrap_or(-1)
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Fetch usage via kiro-cli
+    async fn fetch_via_cli(&self) -> Result<UsageSnapshot, ProviderError> {
+        // First ensure we're logged in
+        self.ensure_logged_in().await?;
+
+        let cli_path = Self::which_kiro().ok_or_else(|| {
+            ProviderError::NotInstalled("kiro-cli not found".to_string())
+        })?;
+
+        // Run the usage command
+        let output = Command::new(&cli_path)
+            .args(["chat", "--no-interactive", "/usage"])
+            .env("TERM", "xterm-256color")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| ProviderError::Other(format!("Failed to run kiro-cli: {}", e)))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let combined = if stdout.trim().is_empty() { &stderr } else { &stdout };
+
+        // Check for login errors
+        let lowered = combined.to_lowercase();
+        if lowered.contains("not logged in")
+            || lowered.contains("login required")
+            || lowered.contains("failed to initialize auth portal")
+            || lowered.contains("oauth error")
+        {
+            return Err(ProviderError::AuthRequired);
+        }
+
+        self.parse_cli_output(&combined)
+    }
+
+    /// Parse CLI output to extract usage information
+    fn parse_cli_output(&self, output: &str) -> Result<UsageSnapshot, ProviderError> {
+        let stripped = Self::strip_ansi(output);
+        let trimmed = stripped.trim();
+
+        if trimmed.is_empty() {
+            return Err(ProviderError::Parse("Empty output from kiro-cli".to_string()));
+        }
+
+        let lowered = stripped.to_lowercase();
+        if lowered.contains("could not retrieve usage information") {
+            return Err(ProviderError::Parse("Kiro CLI could not retrieve usage information".to_string()));
+        }
+
+        // Parse plan name from "| KIRO FREE" or similar
+        let mut plan_name = "Kiro".to_string();
+        if let Ok(re) = Regex::new(r"\|\s*(KIRO\s+\w+)") {
+            if let Some(caps) = re.captures(&stripped) {
+                if let Some(m) = caps.get(1) {
+                    plan_name = m.as_str().trim().to_string();
+                }
+            }
+        }
+
+        // Parse reset date from "resets on 01/01"
+        let mut reset_date: Option<chrono::DateTime<chrono::Utc>> = None;
+        if let Ok(re) = Regex::new(r"resets on (\d{2}/\d{2})") {
+            if let Some(caps) = re.captures(&stripped) {
+                if let Some(m) = caps.get(1) {
+                    reset_date = Self::parse_reset_date(m.as_str());
+                }
+            }
+        }
+
+        // Parse credits percentage from progress bar like "████...█ X%"
+        let mut credits_percent: f64 = 0.0;
+        let mut matched_percent = false;
+        if let Ok(re) = Regex::new(r"█+\s*(\d+)%") {
+            if let Some(caps) = re.captures(&stripped) {
+                if let Some(m) = caps.get(1) {
+                    credits_percent = m.as_str().parse().unwrap_or(0.0);
+                    matched_percent = true;
+                }
+            }
+        }
+
+        // Parse credits used/total from "(X.XX of Y covered in plan)"
+        let mut credits_used: f64 = 0.0;
+        let mut credits_total: f64 = 50.0; // default free tier
+        let mut matched_credits = false;
+        if let Ok(re) = Regex::new(r"\((\d+\.?\d*)\s+of\s+(\d+)\s+covered") {
+            if let Some(caps) = re.captures(&stripped) {
+                if let (Some(used), Some(total)) = (caps.get(1), caps.get(2)) {
+                    credits_used = used.as_str().parse().unwrap_or(0.0);
+                    credits_total = total.as_str().parse().unwrap_or(50.0);
+                    matched_credits = true;
+                }
+            }
+        }
+
+        // Calculate percent from credits if we didn't get it from the progress bar
+        if !matched_percent && matched_credits && credits_total > 0.0 {
+            credits_percent = (credits_used / credits_total) * 100.0;
+        }
+
+        // Parse bonus credits from "Bonus credits: X.XX/Y credits used, expires in Z days"
+        let mut bonus_window: Option<RateWindow> = None;
+        if let Ok(re) = Regex::new(r"Bonus credits:\s*(\d+\.?\d*)/(\d+)") {
+            if let Some(caps) = re.captures(&stripped) {
+                if let (Some(used), Some(total)) = (caps.get(1), caps.get(2)) {
+                    let bonus_used: f64 = used.as_str().parse().unwrap_or(0.0);
+                    let bonus_total: f64 = total.as_str().parse().unwrap_or(0.0);
+                    if bonus_total > 0.0 {
+                        let bonus_percent = (bonus_used / bonus_total) * 100.0;
+
+                        // Try to get expiry days
+                        let mut expiry_desc: Option<String> = None;
+                        if let Ok(exp_re) = Regex::new(r"expires in (\d+) days?") {
+                            if let Some(exp_caps) = exp_re.captures(&stripped) {
+                                if let Some(days) = exp_caps.get(1) {
+                                    expiry_desc = Some(format!("expires in {}d", days.as_str()));
+                                }
+                            }
+                        }
+
+                        bonus_window = Some(RateWindow::with_details(
+                            bonus_percent,
+                            None,
+                            None,
+                            expiry_desc,
+                        ));
                     }
                 }
-
-                if let (Some(ak), Some(sk)) = (access_key, secret_key) {
-                    return Ok((ak, sk));
-                }
             }
         }
 
-        Err(ProviderError::AuthRequired)
-    }
-
-    /// Fetch usage via Kiro API
-    async fn fetch_via_web(&self) -> Result<UsageSnapshot, ProviderError> {
-        let (_access_key, _secret_key) = self.read_credentials().await?;
-
-        // Kiro API requires AWS SigV4 signing
-        // For now, we'll just check if credentials exist
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| ProviderError::Other(e.to_string()))?;
-
-        // Kiro usage endpoint (placeholder - actual endpoint TBD)
-        let resp = client
-            .get("https://api.kiro.dev/v1/usage")
-            .send()
-            .await;
-
-        match resp {
-            Ok(r) if r.status().is_success() => {
-                let json: serde_json::Value = r.json().await
-                    .map_err(|e| ProviderError::Parse(e.to_string()))?;
-                self.parse_usage_response(&json)
-            }
-            _ => {
-                // Return placeholder if API is not available
-                let usage = UsageSnapshot::new(RateWindow::new(0.0))
-                    .with_login_method("Kiro (credentials found)");
-                Ok(usage)
-            }
+        // Require at least some pattern to match
+        if !matched_percent && !matched_credits && plan_name == "Kiro" {
+            // If we have the CLI but can't parse, at least report it's installed
+            let usage = UsageSnapshot::new(RateWindow::new(0.0))
+                .with_login_method("Kiro (installed)");
+            return Ok(usage);
         }
-    }
 
-    fn parse_usage_response(&self, json: &serde_json::Value) -> Result<UsageSnapshot, ProviderError> {
-        let used = json.get("used")
-            .or_else(|| json.get("usage"))
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
+        let primary = RateWindow::with_details(
+            credits_percent,
+            None, // monthly, no fixed window
+            reset_date,
+            None,
+        );
 
-        let limit = json.get("limit")
-            .or_else(|| json.get("quota"))
-            .and_then(|v| v.as_f64())
-            .unwrap_or(100.0);
+        let mut usage = UsageSnapshot::new(primary)
+            .with_login_method(&plan_name);
 
-        let used_percent = if limit > 0.0 {
-            (used / limit) * 100.0
-        } else {
-            0.0
-        };
-
-        let plan = json.get("plan")
-            .or_else(|| json.get("tier"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("Kiro");
-
-        let usage = UsageSnapshot::new(RateWindow::new(used_percent))
-            .with_login_method(plan);
+        if let Some(bonus) = bonus_window {
+            usage = usage.with_secondary(bonus);
+        }
 
         Ok(usage)
     }
 
-    /// Probe CLI for detection
-    async fn probe_cli(&self) -> Result<UsageSnapshot, ProviderError> {
-        let kiro_path = Self::which_kiro().ok_or_else(|| {
-            ProviderError::NotInstalled("Kiro not found. Install from https://kiro.dev".to_string())
-        })?;
+    /// Strip ANSI escape sequences from text
+    fn strip_ansi(text: &str) -> String {
+        // Simple ANSI stripping - remove escape sequences
+        let mut result = String::with_capacity(text.len());
+        let mut chars = text.chars().peekable();
 
-        if kiro_path.exists() {
-            let usage = UsageSnapshot::new(RateWindow::new(0.0))
-                .with_login_method("Kiro (installed)");
-            Ok(usage)
-        } else {
-            Err(ProviderError::NotInstalled("Kiro not found".to_string()))
+        while let Some(c) = chars.next() {
+            if c == '\x1B' {
+                // Skip escape sequence
+                if chars.peek() == Some(&'[') {
+                    chars.next(); // consume '['
+                    // Skip until we hit a letter
+                    while let Some(&next) = chars.peek() {
+                        chars.next();
+                        if next.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                } else if chars.peek() == Some(&']') {
+                    // OSC sequence - skip until BEL or ST
+                    while let Some(next) = chars.next() {
+                        if next == '\x07' || next == '\\' {
+                            break;
+                        }
+                    }
+                }
+            } else {
+                result.push(c);
+            }
         }
+
+        result
+    }
+
+    /// Parse reset date from MM/DD format
+    fn parse_reset_date(date_str: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+        let parts: Vec<&str> = date_str.split('/').collect();
+        if parts.len() != 2 {
+            return None;
+        }
+
+        let month: u32 = parts[0].parse().ok()?;
+        let day: u32 = parts[1].parse().ok()?;
+
+        let now = chrono::Utc::now();
+        let current_year = now.year();
+
+        // Try current year first
+        if let Some(date) = chrono::NaiveDate::from_ymd_opt(current_year, month, day) {
+            let datetime = date.and_hms_opt(0, 0, 0)?;
+            let utc = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(datetime, chrono::Utc);
+            if utc > now {
+                return Some(utc);
+            }
+        }
+
+        // If in the past, use next year
+        if let Some(date) = chrono::NaiveDate::from_ymd_opt(current_year + 1, month, day) {
+            let datetime = date.and_hms_opt(0, 0, 0)?;
+            return Some(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(datetime, chrono::Utc));
+        }
+
+        None
     }
 }
 
@@ -216,19 +352,13 @@ impl Provider for KiroProvider {
         tracing::debug!("Fetching Kiro usage");
 
         match ctx.source_mode {
-            SourceMode::Auto => {
-                if let Ok(usage) = self.fetch_via_web().await {
-                    return Ok(ProviderFetchResult::new(usage, "web"));
-                }
-                let usage = self.probe_cli().await?;
+            SourceMode::Auto | SourceMode::Cli => {
+                let usage = self.fetch_via_cli().await?;
                 Ok(ProviderFetchResult::new(usage, "cli"))
             }
             SourceMode::Web => {
-                let usage = self.fetch_via_web().await?;
-                Ok(ProviderFetchResult::new(usage, "web"))
-            }
-            SourceMode::Cli => {
-                let usage = self.probe_cli().await?;
+                // Kiro doesn't have a direct web API, use CLI
+                let usage = self.fetch_via_cli().await?;
                 Ok(ProviderFetchResult::new(usage, "cli"))
             }
             SourceMode::OAuth => {
@@ -238,11 +368,11 @@ impl Provider for KiroProvider {
     }
 
     fn available_sources(&self) -> Vec<SourceMode> {
-        vec![SourceMode::Auto, SourceMode::Web, SourceMode::Cli]
+        vec![SourceMode::Auto, SourceMode::Cli]
     }
 
     fn supports_web(&self) -> bool {
-        true
+        false
     }
 
     fn supports_cli(&self) -> bool {

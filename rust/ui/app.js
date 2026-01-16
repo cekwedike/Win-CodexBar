@@ -1,88 +1,248 @@
-// CodexBar Tauri Frontend
+// CodexBar Tauri Frontend - Tab-based UI
 
 const { invoke } = window.__TAURI__.core;
 
+// Provider icons mapping
+const PROVIDER_ICONS = {
+    codex: '⚡',
+    claude: '✦',
+    cursor: '⌘',
+    gemini: '◇',
+    copilot: '⊕',
+    antigravity: '✧',
+    factory: '⚙',
+    zed: 'Z',
+    kiro: 'K',
+    vertexai: '△',
+    augment: 'A',
+    minimax: 'M',
+    opencode: 'O'
+};
+
 // State
+let providers = [];
+let selectedProvider = null;
 let isRefreshing = false;
 
 // DOM Elements
-const providersContainer = document.getElementById('providers');
-const lastUpdatedSpan = document.getElementById('lastUpdated');
-const refreshBtn = document.getElementById('refreshBtn');
+const tabBar = document.getElementById('tabBar');
+const providerDetail = document.getElementById('providerDetail');
+const detailName = document.getElementById('detailName');
+const detailUpdated = document.getElementById('detailUpdated');
+const detailPlan = document.getElementById('detailPlan');
+
+const sessionSection = document.getElementById('sessionSection');
+const sessionProgress = document.getElementById('sessionProgress');
+const sessionPercent = document.getElementById('sessionPercent');
+const sessionReset = document.getElementById('sessionReset');
+
+const weeklySection = document.getElementById('weeklySection');
+const weeklyProgress = document.getElementById('weeklyProgress');
+const weeklyPercent = document.getElementById('weeklyPercent');
+const weeklyReset = document.getElementById('weeklyReset');
+const paceInfo = document.getElementById('paceInfo');
+
+const modelSection = document.getElementById('modelSection');
+const modelTitle = document.getElementById('modelTitle');
+const modelPercent = document.getElementById('modelPercent');
+
+const extraSection = document.getElementById('extraSection');
+const extraInfo = document.getElementById('extraInfo');
+const extraPercent = document.getElementById('extraPercent');
+
+const costSection = document.getElementById('costSection');
+const costToday = document.getElementById('costToday');
+const costMonth = document.getElementById('costMonth');
+
+const errorSection = document.getElementById('errorSection');
+const errorMessage = document.getElementById('errorMessage');
+
 const settingsBtn = document.getElementById('settingsBtn');
 const aboutBtn = document.getElementById('aboutBtn');
-const cookiesBtn = document.getElementById('cookiesBtn');
 const quitBtn = document.getElementById('quitBtn');
+const dashboardBtn = document.getElementById('dashboardBtn');
+const statusPageBtn = document.getElementById('statusPageBtn');
+const addAccountBtn = document.getElementById('addAccountBtn');
 
-// Color mapping based on percentage (lower usage = better)
+// Color mapping based on percentage
 function getColorClass(percent) {
     if (percent === null || percent === undefined) return 'gray';
-    if (percent <= 25) return 'green';   // 0-25% used = plenty remaining
-    if (percent <= 50) return 'yellow';  // 25-50% used
-    if (percent <= 75) return 'orange';  // 50-75% used
-    return 'red';                         // 75-100% used = running low
+    if (percent <= 25) return 'green';
+    if (percent <= 50) return 'yellow';
+    if (percent <= 75) return 'orange';
+    return 'red';
 }
 
-// Format relative time
-function formatRelativeTime(timestamp) {
-    if (!timestamp) return 'Never';
+// Format reset time
+function formatResetTime(resetAt) {
+    if (!resetAt) return '';
 
-    const now = Date.now();
-    const diff = now - timestamp;
+    const reset = new Date(resetAt);
+    const now = new Date();
+    const diff = reset - now;
 
-    if (diff < 60000) return 'Just now';
-    if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-    if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-    return `${Math.floor(diff / 86400000)}d ago`;
-}
+    if (diff <= 0) return 'Resetting...';
 
-// Render a single provider
-function renderProvider(provider) {
-    const colorClass = getColorClass(provider.percent);
-    const percentText = provider.percent !== null ? `${provider.percent}%` : '--';
+    const hours = Math.floor(diff / (1000 * 60 * 60));
+    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
 
-    let metaText = '';
-    if (provider.used !== null && provider.limit !== null) {
-        metaText = `${provider.used} / ${provider.limit} ${provider.unit || 'requests'}`;
-        if (provider.reset_time) {
-            metaText += ` • Resets ${provider.reset_time}`;
-        }
+    if (hours >= 24) {
+        const days = Math.floor(hours / 24);
+        const remainingHours = hours % 24;
+        return `Resets in ${days}d ${remainingHours}h`;
     }
 
-    const errorHtml = provider.error
-        ? `<div class="provider-error" title="${provider.error}">${provider.error}</div>`
-        : '';
-
-    const metaHtml = metaText
-        ? `<div class="provider-meta">${metaText}</div>`
-        : '';
-
-    return `
-        <div class="provider" data-name="${provider.name}">
-            <div class="provider-header">
-                <span class="provider-name">
-                    <span class="provider-status ${colorClass}"></span>
-                    ${provider.name}
-                </span>
-                <span class="provider-percent ${colorClass}">${percentText}</span>
-            </div>
-            <div class="progress-bar">
-                <div class="progress-fill ${colorClass}" style="width: ${provider.percent || 0}%"></div>
-            </div>
-            ${errorHtml}
-            ${metaHtml}
-        </div>
-    `;
+    return `Resets in ${hours}h ${minutes}m`;
 }
 
-// Render all providers
-function renderProviders(providers) {
-    if (!providers || providers.length === 0) {
-        providersContainer.innerHTML = '<div class="loading">No providers configured</div>';
+// Format tokens
+function formatTokens(tokens) {
+    if (!tokens) return '0';
+    if (tokens >= 1000000000) return `${(tokens / 1000000000).toFixed(1)}B`;
+    if (tokens >= 1000000) return `${(tokens / 1000000).toFixed(0)}M`;
+    if (tokens >= 1000) return `${(tokens / 1000).toFixed(0)}K`;
+    return tokens.toString();
+}
+
+// Render tab bar - show providers that have data
+function renderTabs() {
+    // Only show providers that successfully returned data (no error)
+    const successfulProviders = providers.filter(p => p.percent !== null && !p.error);
+
+    // Fall back to all providers if none successful yet
+    const tabProviders = successfulProviders.length > 0 ? successfulProviders : providers.slice(0, 2);
+
+    if (tabProviders.length === 0) {
+        tabBar.innerHTML = '<div style="padding: 10px; color: #666;">Loading...</div>';
         return;
     }
 
-    providersContainer.innerHTML = providers.map(renderProvider).join('');
+    tabBar.innerHTML = tabProviders
+        .map(p => {
+            const isActive = selectedProvider && selectedProvider.name === p.name;
+            const icon = PROVIDER_ICONS[p.name.toLowerCase()] || p.name.charAt(0).toUpperCase();
+
+            return `
+                <button class="tab ${isActive ? 'active' : ''}"
+                        data-provider="${p.name}">
+                    <span class="tab-icon">${icon}</span>
+                    <span class="tab-label">${p.name}</span>
+                </button>
+            `;
+        }).join('');
+
+    // Add click handlers
+    tabBar.querySelectorAll('.tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            const providerName = tab.dataset.provider;
+            const provider = providers.find(p => p.name === providerName);
+            if (provider) {
+                selectProvider(provider);
+            }
+        });
+    });
+}
+
+// Select and display a provider
+function selectProvider(provider) {
+    selectedProvider = provider;
+    renderTabs();
+    renderProviderDetail(provider);
+}
+
+// Render provider detail view
+function renderProviderDetail(provider) {
+    if (!provider) {
+        providerDetail.innerHTML = '<div class="loading">Select a provider</div>';
+        return;
+    }
+
+    // Header
+    detailName.textContent = provider.displayName || provider.name;
+    detailUpdated.textContent = 'Updated just now';
+    detailPlan.textContent = provider.plan || '';
+
+    // Handle error state
+    if (provider.error) {
+        sessionSection.classList.add('hidden');
+        weeklySection.classList.add('hidden');
+        modelSection.classList.add('hidden');
+        extraSection.classList.add('hidden');
+        costSection.classList.add('hidden');
+
+        errorSection.classList.add('visible');
+        errorMessage.textContent = provider.error;
+        return;
+    }
+
+    errorSection.classList.remove('visible');
+
+    // Session usage
+    if (provider.session !== undefined && provider.session !== null) {
+        sessionSection.classList.remove('hidden');
+        const sessionColor = getColorClass(provider.session);
+        sessionProgress.style.width = `${provider.session}%`;
+        sessionProgress.className = `progress-fill ${sessionColor}`;
+        sessionPercent.textContent = `${provider.session}% used`;
+        sessionReset.textContent = formatResetTime(provider.sessionReset);
+    } else if (provider.percent !== undefined && provider.percent !== null) {
+        // Fallback to single percent
+        sessionSection.classList.remove('hidden');
+        const sessionColor = getColorClass(provider.percent);
+        sessionProgress.style.width = `${provider.percent}%`;
+        sessionProgress.className = `progress-fill ${sessionColor}`;
+        sessionPercent.textContent = `${provider.percent}% used`;
+        sessionReset.textContent = formatResetTime(provider.resetAt);
+    } else {
+        sessionSection.classList.add('hidden');
+    }
+
+    // Weekly usage
+    if (provider.weekly !== undefined && provider.weekly !== null) {
+        weeklySection.classList.remove('hidden');
+        const weeklyColor = getColorClass(provider.weekly);
+        weeklyProgress.style.width = `${provider.weekly}%`;
+        weeklyProgress.className = `progress-fill ${weeklyColor}`;
+        weeklyPercent.textContent = `${provider.weekly}% used`;
+        weeklyReset.textContent = formatResetTime(provider.weeklyReset);
+
+        // Pace info
+        if (provider.pace) {
+            paceInfo.textContent = provider.pace;
+            paceInfo.classList.remove('hidden');
+        } else {
+            paceInfo.classList.add('hidden');
+        }
+    } else {
+        weeklySection.classList.add('hidden');
+    }
+
+    // Model-specific usage (Sonnet/Opus)
+    if (provider.model !== undefined && provider.model !== null) {
+        modelSection.classList.remove('hidden');
+        modelTitle.textContent = provider.modelName || 'Model';
+        modelPercent.textContent = `${provider.model}% used`;
+    } else {
+        modelSection.classList.add('hidden');
+    }
+
+    // Extra usage (billing)
+    if (provider.extraUsage !== undefined) {
+        extraSection.classList.remove('hidden');
+        extraInfo.textContent = `This month: $${provider.extraUsed?.toFixed(2) || '0.00'} / $${provider.extraLimit?.toFixed(2) || '0.00'}`;
+        extraPercent.textContent = `${provider.extraUsage}% used`;
+    } else {
+        extraSection.classList.add('hidden');
+    }
+
+    // Cost section
+    if (provider.cost) {
+        costSection.classList.remove('hidden');
+        costToday.textContent = `Today: $${provider.cost.today?.toFixed(2) || '0.00'} · ${formatTokens(provider.cost.todayTokens)} tokens`;
+        costMonth.textContent = `Last 30 days: $${provider.cost.month?.toFixed(2) || '0.00'} · ${formatTokens(provider.cost.monthTokens)} tokens`;
+    } else {
+        costSection.classList.add('hidden');
+    }
 }
 
 // Fetch and update provider data
@@ -90,24 +250,33 @@ async function refreshProviders() {
     if (isRefreshing) return;
 
     isRefreshing = true;
-    refreshBtn.classList.add('spinning');
 
     try {
-        const providers = await invoke('get_providers');
-        renderProviders(providers);
-        lastUpdatedSpan.textContent = 'Updated just now';
+        const result = await invoke('get_providers');
+        providers = result;
+
+        renderTabs();
+
+        // Select first provider if none selected, or refresh current selection
+        if (!selectedProvider && providers.length > 0) {
+            // Prefer first provider with data
+            const withData = providers.find(p => p.percent !== null && !p.error);
+            selectProvider(withData || providers[0]);
+        } else if (selectedProvider) {
+            // Refresh current selection
+            const updated = providers.find(p => p.name === selectedProvider.name);
+            if (updated) {
+                selectProvider(updated);
+            }
+        }
     } catch (error) {
         console.error('Failed to fetch providers:', error);
-        lastUpdatedSpan.textContent = 'Update failed';
     } finally {
         isRefreshing = false;
-        refreshBtn.classList.remove('spinning');
     }
 }
 
 // Event handlers
-refreshBtn.addEventListener('click', refreshProviders);
-
 settingsBtn.addEventListener('click', async () => {
     try {
         await invoke('open_settings');
@@ -124,14 +293,6 @@ aboutBtn.addEventListener('click', async () => {
     }
 });
 
-cookiesBtn.addEventListener('click', async () => {
-    try {
-        await invoke('open_cookie_input');
-    } catch (error) {
-        console.error('Failed to open cookies:', error);
-    }
-});
-
 quitBtn.addEventListener('click', async () => {
     try {
         await invoke('quit_app');
@@ -140,13 +301,31 @@ quitBtn.addEventListener('click', async () => {
     }
 });
 
-// Provider click handler (for potential future expansion)
-providersContainer.addEventListener('click', (e) => {
-    const provider = e.target.closest('.provider');
-    if (provider) {
-        const name = provider.dataset.name;
-        console.log('Clicked provider:', name);
-        // Could open provider details or website
+dashboardBtn.addEventListener('click', async () => {
+    if (selectedProvider && selectedProvider.dashboardUrl) {
+        try {
+            await invoke('open_url', { url: selectedProvider.dashboardUrl });
+        } catch (error) {
+            console.error('Failed to open dashboard:', error);
+        }
+    }
+});
+
+statusPageBtn.addEventListener('click', async () => {
+    if (selectedProvider && selectedProvider.statusPageUrl) {
+        try {
+            await invoke('open_url', { url: selectedProvider.statusPageUrl });
+        } catch (error) {
+            console.error('Failed to open status page:', error);
+        }
+    }
+});
+
+addAccountBtn.addEventListener('click', async () => {
+    try {
+        await invoke('open_cookie_input');
+    } catch (error) {
+        console.error('Failed to open add account:', error);
     }
 });
 
@@ -160,8 +339,14 @@ setInterval(refreshProviders, 60000);
 
 // Listen for Tauri events
 window.__TAURI__.event.listen('providers-updated', (event) => {
-    renderProviders(event.payload);
-    lastUpdatedSpan.textContent = 'Updated just now';
+    providers = event.payload;
+    renderTabs();
+    if (selectedProvider) {
+        const updated = providers.find(p => p.name === selectedProvider.name);
+        if (updated) {
+            renderProviderDetail(updated);
+        }
+    }
 });
 
 // Handle window visibility

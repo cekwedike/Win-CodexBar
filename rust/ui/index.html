@@ -8,30 +8,107 @@
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <span class="title">CodexBar</span>
-            <button class="refresh-btn" id="refreshBtn" title="Refresh">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M23 4v6h-6M1 20v-6h6"/>
-                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-                </svg>
+        <!-- Provider Tab Bar -->
+        <div class="tab-bar" id="tabBar">
+            <!-- Tabs will be dynamically inserted here -->
+        </div>
+
+        <!-- Provider Detail View -->
+        <div class="provider-detail" id="providerDetail">
+            <!-- Provider Header -->
+            <div class="detail-header">
+                <div class="detail-title">
+                    <span class="detail-name" id="detailName">Loading...</span>
+                    <span class="detail-updated" id="detailUpdated"></span>
+                </div>
+                <span class="detail-plan" id="detailPlan"></span>
+            </div>
+
+            <!-- Session Section -->
+            <div class="usage-section" id="sessionSection">
+                <div class="section-title">Session</div>
+                <div class="progress-container">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="sessionProgress"></div>
+                    </div>
+                </div>
+                <div class="section-stats">
+                    <span class="stat-percent" id="sessionPercent">0% used</span>
+                    <span class="stat-reset" id="sessionReset"></span>
+                </div>
+            </div>
+
+            <!-- Weekly Section -->
+            <div class="usage-section" id="weeklySection">
+                <div class="section-title">Weekly</div>
+                <div class="progress-container">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="weeklyProgress"></div>
+                    </div>
+                </div>
+                <div class="section-stats">
+                    <span class="stat-percent" id="weeklyPercent">0% used</span>
+                    <span class="stat-reset" id="weeklyReset"></span>
+                </div>
+                <div class="pace-info" id="paceInfo"></div>
+            </div>
+
+            <!-- Model Section (Sonnet/Opus) -->
+            <div class="usage-section model-section" id="modelSection">
+                <div class="section-title" id="modelTitle">Sonnet</div>
+                <div class="section-stats">
+                    <span class="stat-percent" id="modelPercent">0% used</span>
+                </div>
+            </div>
+
+            <!-- Extra Usage Section -->
+            <div class="usage-section extra-section" id="extraSection">
+                <div class="section-title">Extra usage</div>
+                <div class="section-stats">
+                    <span class="stat-info" id="extraInfo">This month: $0.00 / $0.00</span>
+                    <span class="stat-percent" id="extraPercent">0% used</span>
+                </div>
+            </div>
+
+            <!-- Cost Section -->
+            <div class="cost-section" id="costSection">
+                <div class="cost-header">
+                    <span class="cost-title">Cost</span>
+                    <span class="cost-arrow">›</span>
+                </div>
+                <div class="cost-details">
+                    <div class="cost-line" id="costToday">Today: $0.00 · 0 tokens</div>
+                    <div class="cost-line" id="costMonth">Last 30 days: $0.00 · 0 tokens</div>
+                </div>
+            </div>
+
+            <!-- Error Display -->
+            <div class="error-section" id="errorSection">
+                <div class="error-message" id="errorMessage"></div>
+            </div>
+        </div>
+
+        <!-- Action Links -->
+        <div class="action-links">
+            <button class="action-link" id="addAccountBtn">
+                <span class="action-icon">👤</span>
+                Add Account...
+            </button>
+            <button class="action-link" id="dashboardBtn">
+                <span class="action-icon">📊</span>
+                Usage Dashboard
+            </button>
+            <button class="action-link" id="statusPageBtn">
+                <span class="action-icon">⚡</span>
+                Status Page
             </button>
         </div>
 
-        <div class="providers" id="providers">
-            <!-- Providers will be dynamically inserted here -->
-        </div>
-
+        <!-- Footer -->
         <div class="footer">
-            <div class="footer-left">
-                <span class="last-updated" id="lastUpdated">Loading...</span>
-            </div>
-            <div class="footer-right">
-                <button class="footer-btn" id="cookiesBtn" title="Manual Cookies">Cookies</button>
-                <button class="footer-btn" id="settingsBtn">Settings</button>
-                <button class="footer-btn" id="aboutBtn" title="About">About</button>
-                <button class="footer-btn" id="quitBtn">Quit</button>
-            </div>
+            <button class="footer-btn" id="settingsBtn">Settings...</button>
+            <button class="footer-btn" id="aboutBtn">About CodexBar</button>
+            <button class="footer-btn" id="quitBtn">Quit</button>
         </div>
     </div>
 

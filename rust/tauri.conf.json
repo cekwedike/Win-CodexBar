@@ -11,8 +11,8 @@
     "windows": [
       {
         "title": "CodexBar",
-        "width": 320,
-        "height": 400,
+        "width": 400,
+        "height": 480,
         "resizable": false,
         "decorations": false,
         "transparent": true,

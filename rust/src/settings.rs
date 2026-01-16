@@ -21,11 +21,14 @@ pub struct Settings {
     /// Enabled provider IDs (by CLI name)
     pub enabled_providers: HashSet<String>,
 
-    /// Refresh interval in seconds
+    /// Refresh interval in seconds (0 = manual only)
     pub refresh_interval_secs: u64,
 
     /// Whether to start minimized
     pub start_minimized: bool,
+
+    /// Whether to start at login
+    pub start_at_login: bool,
 
     /// Whether to show notifications
     pub show_notifications: bool,
@@ -35,6 +38,15 @@ pub struct Settings {
 
     /// Critical usage threshold for alerts (percentage)
     pub critical_usage_threshold: f64,
+
+    /// Merge mode: show all enabled providers in a single tray icon
+    pub merge_tray_icons: bool,
+
+    /// Show usage bars as "used" (true) or "remaining" (false)
+    pub show_as_used: bool,
+
+    /// Enable random "surprise" animations (blinks, wiggles)
+    pub surprise_animations: bool,
 }
 
 impl Default for Settings {
@@ -48,9 +60,13 @@ impl Default for Settings {
             enabled_providers: enabled,
             refresh_interval_secs: 300, // 5 minutes
             start_minimized: false,
+            start_at_login: false,
             show_notifications: true,
             high_usage_threshold: 70.0,
             critical_usage_threshold: 90.0,
+            merge_tray_icons: false, // Show single provider by default
+            show_as_used: true,      // Show as "used" by default
+            surprise_animations: false, // Off by default
         }
     }
 }
@@ -89,6 +105,56 @@ impl Settings {
         std::fs::write(&path, json)?;
 
         Ok(())
+    }
+
+    /// Set start at login (updates Windows registry)
+    pub fn set_start_at_login(&mut self, enabled: bool) -> anyhow::Result<()> {
+        self.start_at_login = enabled;
+
+        #[cfg(target_os = "windows")]
+        {
+            use winreg::enums::*;
+            use winreg::RegKey;
+
+            let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+            let run_key = hkcu.open_subkey_with_flags(
+                r"Software\Microsoft\Windows\CurrentVersion\Run",
+                KEY_READ | KEY_WRITE,
+            )?;
+
+            if enabled {
+                // Get the current executable path
+                let exe_path = std::env::current_exe()?;
+                let exe_str = exe_path.to_string_lossy();
+                // Add --minimized flag when starting at login
+                let cmd = format!("\"{}\" menubar", exe_str);
+                run_key.set_value("CodexBar", &cmd)?;
+            } else {
+                // Remove the registry entry (ignore if it doesn't exist)
+                let _ = run_key.delete_value("CodexBar");
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Check if start at login is actually enabled in registry
+    #[cfg(target_os = "windows")]
+    pub fn is_start_at_login_enabled() -> bool {
+        use winreg::enums::*;
+        use winreg::RegKey;
+
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        if let Ok(run_key) = hkcu.open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Run") {
+            run_key.get_value::<String, _>("CodexBar").is_ok()
+        } else {
+            false
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    pub fn is_start_at_login_enabled() -> bool {
+        false
     }
 
     /// Check if a provider is enabled
@@ -318,7 +384,7 @@ mod tests {
     fn test_settings_get_all_providers_status() {
         let settings = Settings::default();
         let status = settings.get_all_providers_status();
-        assert_eq!(status.len(), 13); // All 13 providers
+        assert_eq!(status.len(), 15); // All 15 providers
 
         let claude_status = status.iter().find(|s| s.id == "claude").unwrap();
         assert_eq!(claude_status.name, "Claude");

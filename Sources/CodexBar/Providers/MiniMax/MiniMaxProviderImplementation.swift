@@ -43,37 +43,19 @@ struct MiniMaxProviderImplementation: ProviderImplementation {
                 dynamicSubtitle: cookieSubtitle,
                 binding: cookieBinding,
                 options: cookieOptions,
-                isVisible: nil,
-                onChange: nil),
+                isVisible: { !context.settings.debugDisableKeychainAccess },
+                onChange: nil,
+                trailingText: {
+                    guard let entry = CookieHeaderCache.load(provider: .minimax) else { return nil }
+                    let when = entry.storedAt.relativeDescription()
+                    return "Cached: \(entry.sourceLabel) • \(when)"
+                }),
         ]
     }
 
     @MainActor
     func settingsFields(context: ProviderSettingsContext) -> [ProviderSettingsFieldDescriptor] {
-        [
-            ProviderSettingsFieldDescriptor(
-                id: "minimax-cookie",
-                title: "",
-                subtitle: "",
-                kind: .secure,
-                placeholder: "Cookie: …",
-                binding: context.stringBinding(\.minimaxCookieHeader),
-                actions: [
-                    ProviderSettingsActionDescriptor(
-                        id: "minimax-open-dashboard",
-                        title: "Open Coding Plan",
-                        style: .link,
-                        isVisible: nil,
-                        perform: {
-                            if let url = URL(
-                                string: "https://platform.minimax.io/user-center/payment/coding-plan?cycle_type=3")
-                            {
-                                NSWorkspace.shared.open(url)
-                            }
-                        }),
-                ],
-                isVisible: { context.settings.minimaxCookieSource == .manual },
-                onActivate: { context.settings.ensureMiniMaxCookieLoaded() }),
-        ]
+        _ = context
+        return []
     }
 }

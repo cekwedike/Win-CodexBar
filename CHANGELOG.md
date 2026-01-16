@@ -2,6 +2,8 @@
 
 ## 0.18.0 — Unreleased
 ### Providers
+- OpenCode: add web usage provider with workspace override + Chrome-first cookie import (#188). Thanks @anthnykr!
+- Providers: cache browser cookies on disk (per provider) and show cached source/time in settings.
 - Vertex AI: add provider with quota-based usage from gcloud ADC. Thanks @bahag-chaurasiak!
 - Vertex AI: token costs are shown via the Claude provider (same local logs).
 - Vertex AI: harden quota usage parsing for edge-case responses.
@@ -20,6 +22,8 @@
 - Preferences: move “Access OpenAI via web” into Providers → Codex.
 - Preferences: add usage source pickers for Codex + Claude with auto fallback.
 - Preferences: add cookie source pickers with contextual helper text for the selected mode.
+- Preferences: add debug switch to disable Keychain access and hide cookie-based web options.
+- Preferences: add per-provider menu bar metric picker (#185) — thanks @HaukeSchnau
 - Preferences: tighten provider rows (inline pickers, compact layout, inline refresh + auto-source status).
 - Preferences: remove the “experimental” label from Antigravity.
 - Menu bar: fix combined loading indicator flicker during loading animation (incl. debug replay).
@@ -28,6 +32,8 @@
 ### Menu
 - Menu: add a toggle to show reset times as absolute clock values (instead of countdowns).
 - Menu: show an “Open Terminal” action when Claude OAuth fails.
+- Menu: add “Hide personal information” toggle and redact emails in menu UI (#137). Thanks @t3dotgg!
+- Menu: reduce provider-switch flicker and avoid redundant menu card sizing for faster opens (#132). Thanks @ibehnam!
 
 ### CLI
 - CLI: respect the reset time display setting.

@@ -33,9 +33,28 @@ enum RefreshFrequency: String, CaseIterable, Identifiable {
     }
 }
 
+enum MenuBarMetricPreference: String, CaseIterable, Identifiable {
+    case automatic
+    case primary
+    case secondary
+    case average
+
+    var id: String { self.rawValue }
+
+    var label: String {
+        switch self {
+        case .automatic: "Automatic"
+        case .primary: "Primary"
+        case .secondary: "Secondary"
+        case .average: "Average"
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class SettingsStore {
+    private static let sharedDefaults = UserDefaults(suiteName: "group.com.steipete.codexbar")
     /// Persisted provider display order.
     ///
     /// Stored as raw `UsageProvider` strings so new providers can be appended automatically without breaking.
@@ -58,6 +77,15 @@ final class SettingsStore {
     /// -bool YES).
     var debugMenuEnabled: Bool {
         didSet { self.userDefaults.set(self.debugMenuEnabled, forKey: "debugMenuEnabled") }
+    }
+
+    /// Debug-only: disable all Keychain access and hide cookie-based web options.
+    var debugDisableKeychainAccess: Bool {
+        didSet {
+            self.userDefaults.set(self.debugDisableKeychainAccess, forKey: "debugDisableKeychainAccess")
+            Self.sharedDefaults?.set(self.debugDisableKeychainAccess, forKey: "debugDisableKeychainAccess")
+            KeychainAccessGate.isDisabled = self.debugDisableKeychainAccess
+        }
     }
 
     private var debugLoadingPatternRaw: String? {
@@ -97,9 +125,24 @@ final class SettingsStore {
         }
     }
 
+    /// Optional: show all token accounts stacked in the menu (otherwise show a switcher bar).
+    var showAllTokenAccountsInMenu: Bool {
+        didSet { self.userDefaults.set(self.showAllTokenAccountsInMenu, forKey: "showAllTokenAccountsInMenu") }
+    }
+
+    /// Optional: choose which quota window drives the menu bar percentage.
+    private var menuBarMetricPreferencesRaw: [String: String] {
+        didSet { self.userDefaults.set(self.menuBarMetricPreferencesRaw, forKey: "menuBarMetricPreferences") }
+    }
+
     /// Optional: show provider cost summary from local usage logs (Codex + Claude).
     var costUsageEnabled: Bool {
         didSet { self.userDefaults.set(self.costUsageEnabled, forKey: "tokenCostUsageEnabled") }
+    }
+
+    /// Optional: hide personal info (emails) in menu bar + menu content.
+    var hidePersonalInfo: Bool {
+        didSet { self.userDefaults.set(self.hidePersonalInfo, forKey: "hidePersonalInfo") }
     }
 
     var randomBlinkEnabled: Bool {
@@ -109,7 +152,12 @@ final class SettingsStore {
     /// Optional: augment Claude usage with claude.ai web API (via browser cookies),
     /// incl. "Extra usage" spend.
     var claudeWebExtrasEnabled: Bool {
-        didSet { self.userDefaults.set(self.claudeWebExtrasEnabled, forKey: "claudeWebExtrasEnabled") }
+        get { self.debugDisableKeychainAccess ? false : self.claudeWebExtrasEnabledRaw }
+        set { self.claudeWebExtrasEnabledRaw = newValue }
+    }
+
+    private var claudeWebExtrasEnabledRaw: Bool {
+        didSet { self.userDefaults.set(self.claudeWebExtrasEnabledRaw, forKey: "claudeWebExtrasEnabled") }
     }
 
     /// Optional: show Codex credits + Claude extra usage sections in the menu UI.
@@ -174,6 +222,26 @@ final class SettingsStore {
         }
     }
 
+    private var opencodeCookieSourceRaw: String? {
+        didSet {
+            if let raw = self.opencodeCookieSourceRaw {
+                self.userDefaults.set(raw, forKey: "opencodeCookieSource")
+            } else {
+                self.userDefaults.removeObject(forKey: "opencodeCookieSource")
+            }
+        }
+    }
+
+    private var opencodeWorkspaceIDRaw: String? {
+        didSet {
+            if let raw = self.opencodeWorkspaceIDRaw, !raw.isEmpty {
+                self.userDefaults.set(raw, forKey: "opencodeWorkspaceID")
+            } else {
+                self.userDefaults.removeObject(forKey: "opencodeWorkspaceID")
+            }
+        }
+    }
+
     private var factoryCookieSourceRaw: String? {
         didSet {
             if let raw = self.factoryCookieSourceRaw {
@@ -234,6 +302,20 @@ final class SettingsStore {
         didSet { self.schedulePersistCursorCookieHeader() }
     }
 
+    /// OpenCode session cookie header (stored in Keychain).
+    var opencodeCookieHeader: String {
+        didSet { self.schedulePersistOpenCodeCookieHeader() }
+    }
+
+    /// Optional OpenCode workspace ID override.
+    var opencodeWorkspaceID: String {
+        get { self.opencodeWorkspaceIDRaw ?? "" }
+        set {
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.opencodeWorkspaceIDRaw = trimmed.isEmpty ? nil : trimmed
+        }
+    }
+
     /// Factory session cookie header (stored in Keychain).
     var factoryCookieHeader: String {
         didSet { self.schedulePersistFactoryCookieHeader() }
@@ -252,6 +334,11 @@ final class SettingsStore {
     /// Copilot API token (stored in Keychain).
     var copilotAPIToken: String {
         didSet { self.schedulePersistCopilotAPIToken() }
+    }
+
+    /// Token accounts loaded from the local config file.
+    var tokenAccountsByProvider: [UsageProvider: ProviderTokenAccountData] {
+        didSet { self.schedulePersistTokenAccounts() }
     }
 
     private var selectedMenuProviderRaw: String? {
@@ -301,7 +388,10 @@ final class SettingsStore {
     }
 
     var codexCookieSource: ProviderCookieSource {
-        get { ProviderCookieSource(rawValue: self.codexCookieSourceRaw ?? "") ?? .auto }
+        get {
+            guard !self.debugDisableKeychainAccess else { return .off }
+            return ProviderCookieSource(rawValue: self.codexCookieSourceRaw ?? "") ?? .auto
+        }
         set {
             self.codexCookieSourceRaw = newValue.rawValue
             self.openAIWebAccessEnabled = newValue.isEnabled
@@ -309,27 +399,72 @@ final class SettingsStore {
     }
 
     var claudeCookieSource: ProviderCookieSource {
-        get { ProviderCookieSource(rawValue: self.claudeCookieSourceRaw ?? "") ?? .auto }
+        get {
+            guard !self.debugDisableKeychainAccess else { return .off }
+            return ProviderCookieSource(rawValue: self.claudeCookieSourceRaw ?? "") ?? .auto
+        }
         set { self.claudeCookieSourceRaw = newValue.rawValue }
     }
 
     var cursorCookieSource: ProviderCookieSource {
-        get { ProviderCookieSource(rawValue: self.cursorCookieSourceRaw ?? "") ?? .auto }
+        get {
+            guard !self.debugDisableKeychainAccess else { return .off }
+            return ProviderCookieSource(rawValue: self.cursorCookieSourceRaw ?? "") ?? .auto
+        }
         set { self.cursorCookieSourceRaw = newValue.rawValue }
     }
 
+    var opencodeCookieSource: ProviderCookieSource {
+        get {
+            guard !self.debugDisableKeychainAccess else { return .off }
+            return ProviderCookieSource(rawValue: self.opencodeCookieSourceRaw ?? "") ?? .auto
+        }
+        set { self.opencodeCookieSourceRaw = newValue.rawValue }
+    }
+
+    func menuBarMetricPreference(for provider: UsageProvider) -> MenuBarMetricPreference {
+        if provider == .zai { return .primary }
+        let raw = self.menuBarMetricPreferencesRaw[provider.rawValue] ?? ""
+        let preference = MenuBarMetricPreference(rawValue: raw) ?? .automatic
+        if preference == .average, !self.menuBarMetricSupportsAverage(for: provider) {
+            return .automatic
+        }
+        return preference
+    }
+
+    func setMenuBarMetricPreference(_ preference: MenuBarMetricPreference, for provider: UsageProvider) {
+        if provider == .zai {
+            self.menuBarMetricPreferencesRaw[provider.rawValue] = MenuBarMetricPreference.primary.rawValue
+            return
+        }
+        self.menuBarMetricPreferencesRaw[provider.rawValue] = preference.rawValue
+    }
+
+    func menuBarMetricSupportsAverage(for provider: UsageProvider) -> Bool {
+        provider == .gemini
+    }
+
     var factoryCookieSource: ProviderCookieSource {
-        get { ProviderCookieSource(rawValue: self.factoryCookieSourceRaw ?? "") ?? .auto }
+        get {
+            guard !self.debugDisableKeychainAccess else { return .off }
+            return ProviderCookieSource(rawValue: self.factoryCookieSourceRaw ?? "") ?? .auto
+        }
         set { self.factoryCookieSourceRaw = newValue.rawValue }
     }
 
     var minimaxCookieSource: ProviderCookieSource {
-        get { ProviderCookieSource(rawValue: self.minimaxCookieSourceRaw ?? "") ?? .auto }
+        get {
+            guard !self.debugDisableKeychainAccess else { return .off }
+            return ProviderCookieSource(rawValue: self.minimaxCookieSourceRaw ?? "") ?? .auto
+        }
         set { self.minimaxCookieSourceRaw = newValue.rawValue }
     }
 
     var augmentCookieSource: ProviderCookieSource {
-        get { ProviderCookieSource(rawValue: self.augmentCookieSourceRaw ?? "") ?? .auto }
+        get {
+            guard !self.debugDisableKeychainAccess else { return .off }
+            return ProviderCookieSource(rawValue: self.augmentCookieSourceRaw ?? "") ?? .auto
+        }
         set { self.augmentCookieSourceRaw = newValue.rawValue }
     }
 
@@ -338,12 +473,16 @@ final class SettingsStore {
         _ = self.refreshFrequency
         _ = self.launchAtLogin
         _ = self.debugMenuEnabled
+        _ = self.debugDisableKeychainAccess
         _ = self.statusChecksEnabled
         _ = self.sessionQuotaNotificationsEnabled
         _ = self.usageBarsShowUsed
         _ = self.resetTimesShowAbsolute
         _ = self.menuBarShowsBrandIconWithPercent
+        _ = self.showAllTokenAccountsInMenu
+        _ = self.menuBarMetricPreferencesRaw
         _ = self.costUsageEnabled
+        _ = self.hidePersonalInfo
         _ = self.randomBlinkEnabled
         _ = self.claudeWebExtrasEnabled
         _ = self.showOptionalCreditsAndExtraUsage
@@ -353,6 +492,7 @@ final class SettingsStore {
         _ = self.codexCookieSource
         _ = self.claudeCookieSource
         _ = self.cursorCookieSource
+        _ = self.opencodeCookieSource
         _ = self.factoryCookieSource
         _ = self.minimaxCookieSource
         _ = self.mergeIcons
@@ -361,9 +501,12 @@ final class SettingsStore {
         _ = self.codexCookieHeader
         _ = self.claudeCookieHeader
         _ = self.cursorCookieHeader
+        _ = self.opencodeCookieHeader
+        _ = self.opencodeWorkspaceID
         _ = self.factoryCookieHeader
         _ = self.minimaxCookieHeader
         _ = self.copilotAPIToken
+        _ = self.tokenAccountsByProvider
         _ = self.debugLoadingPattern
         _ = self.selectedMenuProvider
         _ = self.providerToggleRevision
@@ -392,6 +535,10 @@ final class SettingsStore {
     @ObservationIgnored private var cursorCookiePersistTask: Task<Void, Never>?
     @ObservationIgnored private var cursorCookieLoaded = false
     @ObservationIgnored private var cursorCookieLoading = false
+    @ObservationIgnored private let opencodeCookieStore: any CookieHeaderStoring
+    @ObservationIgnored private var opencodeCookiePersistTask: Task<Void, Never>?
+    @ObservationIgnored private var opencodeCookieLoaded = false
+    @ObservationIgnored private var opencodeCookieLoading = false
     @ObservationIgnored private let factoryCookieStore: any CookieHeaderStoring
     @ObservationIgnored private var factoryCookiePersistTask: Task<Void, Never>?
     @ObservationIgnored private var factoryCookieLoaded = false
@@ -408,6 +555,10 @@ final class SettingsStore {
     @ObservationIgnored private var copilotTokenPersistTask: Task<Void, Never>?
     @ObservationIgnored private var copilotTokenLoaded = false
     @ObservationIgnored private var copilotTokenLoading = false
+    @ObservationIgnored private let tokenAccountStore: any ProviderTokenAccountStoring
+    @ObservationIgnored private var tokenAccountsPersistTask: Task<Void, Never>?
+    @ObservationIgnored private var tokenAccountsLoaded = false
+    @ObservationIgnored private var tokenAccountsLoading = false
     // Cache enablement so tight UI loops (menu bar animations) don't hit UserDefaults each tick.
     @ObservationIgnored private var cachedProviderEnablement: [UsageProvider: Bool] = [:]
     @ObservationIgnored private var cachedProviderEnablementRevision: Int = -1
@@ -431,6 +582,9 @@ final class SettingsStore {
         cursorCookieStore: any CookieHeaderStoring = KeychainCookieHeaderStore(
             account: "cursor-cookie",
             promptKind: .cursorCookie),
+        opencodeCookieStore: any CookieHeaderStoring = KeychainCookieHeaderStore(
+            account: "opencode-cookie",
+            promptKind: .opencodeCookie),
         factoryCookieStore: any CookieHeaderStoring = KeychainCookieHeaderStore(
             account: "factory-cookie",
             promptKind: .factoryCookie),
@@ -438,22 +592,33 @@ final class SettingsStore {
         augmentCookieStore: any CookieHeaderStoring = KeychainCookieHeaderStore(
             account: "augment-cookie",
             promptKind: .augmentCookie),
-        copilotTokenStore: any CopilotTokenStoring = KeychainCopilotTokenStore())
+        copilotTokenStore: any CopilotTokenStoring = KeychainCopilotTokenStore(),
+        tokenAccountStore: any ProviderTokenAccountStoring = FileTokenAccountStore())
     {
         self.userDefaults = userDefaults
         self.zaiTokenStore = zaiTokenStore
         self.codexCookieStore = codexCookieStore
         self.claudeCookieStore = claudeCookieStore
         self.cursorCookieStore = cursorCookieStore
+        self.opencodeCookieStore = opencodeCookieStore
         self.factoryCookieStore = factoryCookieStore
         self.minimaxCookieStore = minimaxCookieStore
         self.augmentCookieStore = augmentCookieStore
         self.copilotTokenStore = copilotTokenStore
+        self.tokenAccountStore = tokenAccountStore
         self.providerOrderRaw = userDefaults.stringArray(forKey: "providerOrder") ?? []
         let raw = userDefaults.string(forKey: "refreshFrequency") ?? RefreshFrequency.fiveMinutes.rawValue
         self.refreshFrequency = RefreshFrequency(rawValue: raw) ?? .fiveMinutes
         self.launchAtLogin = userDefaults.object(forKey: "launchAtLogin") as? Bool ?? false
         self.debugMenuEnabled = userDefaults.object(forKey: "debugMenuEnabled") as? Bool ?? false
+        if let stored = userDefaults.object(forKey: "debugDisableKeychainAccess") as? Bool {
+            self.debugDisableKeychainAccess = stored
+        } else if let shared = Self.sharedDefaults?.object(forKey: "debugDisableKeychainAccess") as? Bool {
+            self.debugDisableKeychainAccess = shared
+            userDefaults.set(shared, forKey: "debugDisableKeychainAccess")
+        } else {
+            self.debugDisableKeychainAccess = false
+        }
         self.debugLoadingPatternRaw = userDefaults.string(forKey: "debugLoadingPattern")
         self.statusChecksEnabled = userDefaults.object(forKey: "statusChecksEnabled") as? Bool ?? true
         let sessionQuotaNotificationsDefault = userDefaults.object(
@@ -466,9 +631,23 @@ final class SettingsStore {
         self.resetTimesShowAbsolute = userDefaults.object(forKey: "resetTimesShowAbsolute") as? Bool ?? false
         self.menuBarShowsBrandIconWithPercent = userDefaults.object(
             forKey: "menuBarShowsBrandIconWithPercent") as? Bool ?? false
+        self.showAllTokenAccountsInMenu = userDefaults.object(
+            forKey: "showAllTokenAccountsInMenu") as? Bool ?? false
+        let storedMenuBarMetricPreferences = userDefaults.dictionary(
+            forKey: "menuBarMetricPreferences") as? [String: String] ?? [:]
+        var resolvedMenuBarMetricPreferences = storedMenuBarMetricPreferences
+        if resolvedMenuBarMetricPreferences.isEmpty,
+           let menuBarMetricRaw = userDefaults.string(forKey: "menuBarMetricPreference"),
+           let legacyPreference = MenuBarMetricPreference(rawValue: menuBarMetricRaw)
+        {
+            resolvedMenuBarMetricPreferences = Dictionary(
+                uniqueKeysWithValues: UsageProvider.allCases.map { ($0.rawValue, legacyPreference.rawValue) })
+        }
+        self.menuBarMetricPreferencesRaw = resolvedMenuBarMetricPreferences
         self.costUsageEnabled = userDefaults.object(forKey: "tokenCostUsageEnabled") as? Bool ?? false
+        self.hidePersonalInfo = userDefaults.object(forKey: "hidePersonalInfo") as? Bool ?? false
         self.randomBlinkEnabled = userDefaults.object(forKey: "randomBlinkEnabled") as? Bool ?? false
-        self.claudeWebExtrasEnabled = userDefaults.object(forKey: "claudeWebExtrasEnabled") as? Bool ?? false
+        self.claudeWebExtrasEnabledRaw = userDefaults.object(forKey: "claudeWebExtrasEnabled") as? Bool ?? false
         let creditsExtrasDefault = userDefaults.object(forKey: "showOptionalCreditsAndExtraUsage") as? Bool
         self.showOptionalCreditsAndExtraUsage = creditsExtrasDefault ?? true
         if creditsExtrasDefault == nil {
@@ -495,6 +674,9 @@ final class SettingsStore {
             ?? ProviderCookieSource.auto.rawValue
         self.cursorCookieSourceRaw = userDefaults.string(forKey: "cursorCookieSource")
             ?? ProviderCookieSource.auto.rawValue
+        self.opencodeCookieSourceRaw = userDefaults.string(forKey: "opencodeCookieSource")
+            ?? ProviderCookieSource.auto.rawValue
+        self.opencodeWorkspaceIDRaw = userDefaults.string(forKey: "opencodeWorkspaceID")
         self.factoryCookieSourceRaw = userDefaults.string(forKey: "factoryCookieSource")
             ?? ProviderCookieSource.auto.rawValue
         self.minimaxCookieSourceRaw = userDefaults.string(forKey: "minimaxCookieSource")
@@ -507,10 +689,12 @@ final class SettingsStore {
         self.codexCookieHeader = ""
         self.claudeCookieHeader = ""
         self.cursorCookieHeader = ""
+        self.opencodeCookieHeader = ""
         self.factoryCookieHeader = ""
         self.minimaxCookieHeader = ""
         self.augmentCookieHeader = ""
         self.copilotAPIToken = ""
+        self.tokenAccountsByProvider = [:]
         self.selectedMenuProviderRaw = userDefaults.string(forKey: "selectedMenuProvider")
         self.providerDetectionCompleted = userDefaults.object(
             forKey: "providerDetectionCompleted") as? Bool ?? false
@@ -523,6 +707,8 @@ final class SettingsStore {
             self.claudeWebExtrasEnabled = false
         }
         self.openAIWebAccessEnabled = self.codexCookieSource.isEnabled
+        Self.sharedDefaults?.set(self.debugDisableKeychainAccess, forKey: "debugDisableKeychainAccess")
+        KeychainAccessGate.isDisabled = self.debugDisableKeychainAccess
     }
 
     func orderedProviders() -> [UsageProvider] {
@@ -855,6 +1041,32 @@ extension SettingsStore {
         }
     }
 
+    private func schedulePersistOpenCodeCookieHeader() {
+        if self.opencodeCookieLoading { return }
+        self.opencodeCookiePersistTask?.cancel()
+        let header = self.opencodeCookieHeader
+        let cookieStore = self.opencodeCookieStore
+        self.opencodeCookiePersistTask = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: 350_000_000)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            let error: (any Error)? = await Task.detached(priority: .utility) { () -> (any Error)? in
+                do {
+                    try cookieStore.storeCookieHeader(header)
+                    return nil
+                } catch {
+                    return error
+                }
+            }.value
+            if let error {
+                CodexBarLog.logger("opencode-cookie-store").error("Failed to persist OpenCode cookie: \(error)")
+            }
+        }
+    }
+
     private func schedulePersistAugmentCookieHeader() {
         if self.augmentCookieLoading { return }
         self.augmentCookiePersistTask?.cancel()
@@ -958,6 +1170,32 @@ extension SettingsStore {
             }
         }
     }
+
+    private func schedulePersistTokenAccounts() {
+        if self.tokenAccountsLoading { return }
+        self.tokenAccountsPersistTask?.cancel()
+        let accounts = self.tokenAccountsByProvider
+        let tokenStore = self.tokenAccountStore
+        self.tokenAccountsPersistTask = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: 350_000_000)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            let error: (any Error)? = await Task.detached(priority: .utility) { () -> (any Error)? in
+                do {
+                    try tokenStore.storeAccounts(accounts)
+                    return nil
+                } catch {
+                    return error
+                }
+            }.value
+            if let error {
+                CodexBarLog.logger("token-account-store").error("Failed to persist token accounts: \(error)")
+            }
+        }
+    }
 }
 
 extension SettingsStore {
@@ -993,6 +1231,14 @@ extension SettingsStore {
         self.cursorCookieLoaded = true
     }
 
+    func ensureOpenCodeCookieLoaded() {
+        guard !self.opencodeCookieLoaded else { return }
+        self.opencodeCookieLoading = true
+        self.opencodeCookieHeader = (try? self.opencodeCookieStore.loadCookieHeader()) ?? ""
+        self.opencodeCookieLoading = false
+        self.opencodeCookieLoaded = true
+    }
+
     func ensureFactoryCookieLoaded() {
         guard !self.factoryCookieLoaded else { return }
         self.factoryCookieLoading = true
@@ -1023,6 +1269,125 @@ extension SettingsStore {
         self.copilotAPIToken = (try? self.copilotTokenStore.loadToken()) ?? ""
         self.copilotTokenLoading = false
         self.copilotTokenLoaded = true
+    }
+
+    func ensureTokenAccountsLoaded() {
+        guard !self.tokenAccountsLoaded else { return }
+        self.tokenAccountsLoading = true
+        self.tokenAccountsByProvider = (try? self.tokenAccountStore.loadAccounts()) ?? [:]
+        for (provider, data) in self.tokenAccountsByProvider where !data.accounts.isEmpty {
+            self.applyTokenAccountSideEffects(for: provider)
+        }
+        self.tokenAccountsLoading = false
+        self.tokenAccountsLoaded = true
+    }
+
+    func tokenAccountsData(for provider: UsageProvider) -> ProviderTokenAccountData? {
+        self.ensureTokenAccountsLoaded()
+        return self.tokenAccountsByProvider[provider]
+    }
+
+    func tokenAccounts(for provider: UsageProvider) -> [ProviderTokenAccount] {
+        self.tokenAccountsData(for: provider)?.accounts ?? []
+    }
+
+    func selectedTokenAccount(for provider: UsageProvider) -> ProviderTokenAccount? {
+        guard let data = self.tokenAccountsData(for: provider), !data.accounts.isEmpty else { return nil }
+        let index = data.clampedActiveIndex()
+        guard index < data.accounts.count else { return nil }
+        return data.accounts[index]
+    }
+
+    func setTokenAccounts(_ data: ProviderTokenAccountData?, for provider: UsageProvider) {
+        self.ensureTokenAccountsLoaded()
+        if let data {
+            self.tokenAccountsByProvider[provider] = data
+        } else {
+            self.tokenAccountsByProvider.removeValue(forKey: provider)
+        }
+    }
+
+    func setActiveTokenAccountIndex(_ index: Int, for provider: UsageProvider) {
+        self.ensureTokenAccountsLoaded()
+        guard var data = self.tokenAccountsByProvider[provider] else { return }
+        let clamped = min(max(index, 0), max(0, data.accounts.count - 1))
+        data = ProviderTokenAccountData(version: data.version, accounts: data.accounts, activeIndex: clamped)
+        self.tokenAccountsByProvider[provider] = data
+    }
+
+    func addTokenAccount(provider: UsageProvider, label: String, token: String) {
+        self.ensureTokenAccountsLoaded()
+        let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedLabel.isEmpty, !trimmedToken.isEmpty else { return }
+        let now = Date().timeIntervalSince1970
+        var data = self.tokenAccountsByProvider[provider]
+            ?? ProviderTokenAccountData(version: 1, accounts: [], activeIndex: 0)
+        let account = ProviderTokenAccount(
+            id: UUID(),
+            label: trimmedLabel,
+            token: trimmedToken,
+            addedAt: now,
+            lastUsed: now)
+        data = ProviderTokenAccountData(
+            version: data.version,
+            accounts: data.accounts + [account],
+            activeIndex: max(0, data.accounts.count))
+        self.tokenAccountsByProvider[provider] = data
+        self.applyTokenAccountSideEffects(for: provider)
+    }
+
+    func removeTokenAccount(provider: UsageProvider, accountID: UUID) {
+        self.ensureTokenAccountsLoaded()
+        guard let data = self.tokenAccountsByProvider[provider] else { return }
+        let remaining = data.accounts.filter { $0.id != accountID }
+        if remaining.isEmpty {
+            self.tokenAccountsByProvider.removeValue(forKey: provider)
+            return
+        }
+        let newIndex = min(data.clampedActiveIndex(), max(0, remaining.count - 1))
+        self.tokenAccountsByProvider[provider] = ProviderTokenAccountData(
+            version: data.version,
+            accounts: remaining,
+            activeIndex: newIndex)
+    }
+
+    func reloadTokenAccounts() {
+        self.tokenAccountsLoaded = false
+        self.ensureTokenAccountsLoaded()
+    }
+
+    func openTokenAccountsFile() {
+        do {
+            let url = try self.tokenAccountStore.ensureFileExists()
+            NSWorkspace.shared.open(url)
+        } catch {
+            CodexBarLog.logger("token-account-store").error("Failed to open token accounts file: \(error)")
+        }
+    }
+
+    private func applyTokenAccountSideEffects(for provider: UsageProvider) {
+        guard let support = TokenAccountSupportCatalog.support(for: provider),
+              support.requiresManualCookieSource
+        else {
+            return
+        }
+        switch provider {
+        case .claude:
+            self.claudeCookieSource = .manual
+        case .cursor:
+            self.cursorCookieSource = .manual
+        case .opencode:
+            self.opencodeCookieSource = .manual
+        case .factory:
+            self.factoryCookieSource = .manual
+        case .minimax:
+            self.minimaxCookieSource = .manual
+        case .augment:
+            self.augmentCookieSource = .manual
+        default:
+            break
+        }
     }
 }
 

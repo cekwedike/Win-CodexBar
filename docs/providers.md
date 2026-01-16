@@ -13,6 +13,8 @@ Legend: web (browser cookies/WebView), cli (RPC/PTy), oauth (API), api token, lo
 Source labels (CLI/header): `openai-web`, `web`, `oauth`, `api`, `local`, plus provider-specific CLI labels (e.g. `codex-cli`, `claude`).
 
 Cookie-based providers expose a Cookie source picker (Automatic or Manual) in Settings → Providers.
+Browser cookie imports are cached at `~/Library/Application Support/CodexBar/<provider>-cookie.json` and reused until
+the session is invalid, to avoid repeated Keychain prompts.
 
 | Provider | Strategies (ordered for auto) |
 | --- | --- |
@@ -21,6 +23,7 @@ Cookie-based providers expose a Cookie source picker (Automatic or Manual) in Se
 | Gemini | OAuth API via Gemini CLI credentials (`api`). |
 | Antigravity | Local LSP/HTTP probe (`local`). |
 | Cursor | Web API via cookies → stored WebKit session (`web`). |
+| OpenCode | Web dashboard via cookies (`web`). |
 | Droid/Factory | Web cookies → stored tokens → local storage → WorkOS cookies (`web`). |
 | z.ai | API token (Keychain/env) → quota API (`api`). |
 | MiniMax | Manual cookie header (Keychain/env) → browser cookies (+ local storage access token) → coding plan page (HTML) with remains API fallback (`web`). |
@@ -74,6 +77,12 @@ Cookie-based providers expose a Cookie source picker (Automatic or Manual) in Se
 - Fallback: stored WebKit session.
 - Status: Statuspage.io (Cursor).
 - Details: `docs/cursor.md`.
+
+## OpenCode
+- Web dashboard via browser cookies (`opencode.ai`).
+- `POST https://opencode.ai/_server` (workspaces + subscription usage).
+- Status: none yet.
+- Details: `docs/opencode.md`.
 
 ## Droid (Factory)
 - Web API via Factory cookies, bearer tokens, and WorkOS refresh tokens.

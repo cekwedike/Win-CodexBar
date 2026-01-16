@@ -318,7 +318,7 @@ mod tests {
     fn test_settings_get_all_providers_status() {
         let settings = Settings::default();
         let status = settings.get_all_providers_status();
-        assert_eq!(status.len(), 12); // All 12 providers
+        assert_eq!(status.len(), 13); // All 13 providers
 
         let claude_status = status.iter().find(|s| s.id == "claude").unwrap();
         assert_eq!(claude_status.name, "Claude");

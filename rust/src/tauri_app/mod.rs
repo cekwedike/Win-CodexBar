@@ -15,7 +15,7 @@ use crate::notifications::NotificationManager;
 use crate::providers::{
     AntigravityProvider, AugmentProvider, ClaudeProvider, CodexProvider,
     CopilotProvider, CursorProvider, FactoryProvider, GeminiProvider,
-    KiroProvider, MiniMaxProvider, VertexAIProvider, ZaiProvider,
+    KiroProvider, MiniMaxProvider, OpenCodeProvider, VertexAIProvider, ZaiProvider,
 };
 use crate::settings::Settings;
 use crate::status::{fetch_provider_status, StatusLevel};
@@ -175,6 +175,7 @@ fn create_provider(id: ProviderId) -> Box<dyn Provider> {
         ProviderId::VertexAI => Box::new(VertexAIProvider::new()),
         ProviderId::Augment => Box::new(AugmentProvider::new()),
         ProviderId::MiniMax => Box::new(MiniMaxProvider::new()),
+        ProviderId::OpenCode => Box::new(OpenCodeProvider::new()),
     }
 }
 

@@ -30,7 +30,7 @@ A Windows port of [CodexBar](https://github.com/steipete/CodexBar) - a system tr
 
 ### From Release
 
-Download the latest release from the [Releases](https://github.com/example/win-codexbar/releases) page.
+Download the latest release from the [Releases](https://github.com/Finesssee/Win-CodexBar/releases) page.
 
 ### Build from Source
 
@@ -40,8 +40,8 @@ Requirements:
 
 ```powershell
 # Clone the repository
-git clone https://github.com/example/win-codexbar.git
-cd win-codexbar/rust
+git clone https://github.com/Finesssee/Win-CodexBar.git
+cd Win-CodexBar/rust
 
 # Build release version
 cargo build --release

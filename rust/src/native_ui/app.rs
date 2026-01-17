@@ -5,11 +5,13 @@ use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, Rect, R
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use super::charts::{ChartPoint, CostHistoryChart};
 use super::preferences::PreferencesWindow;
 use super::theme::{provider_icon, Theme};
 use crate::core::{FetchContext, Provider, ProviderId, ProviderFetchResult, RateWindow};
 use crate::providers::*;
 use crate::settings::{ManualCookies, Settings};
+use crate::shortcuts::ShortcutManager;
 use crate::status::{fetch_provider_status, get_status_page_url, StatusLevel};
 use crate::tray::{IconOverlay, LoadingPattern, ProviderUsage, SurpriseAnimation, TrayManager, TrayMenuAction};
 use crate::updater::{self, UpdateInfo};
@@ -42,6 +44,8 @@ pub struct ProviderData {
     // Status/incident info
     pub status_level: StatusLevel,
     pub status_description: Option<String>,
+    // Cost history for charts (date -> cost USD)
+    pub cost_history: Vec<(String, f64)>,
 }
 
 impl ProviderData {
@@ -94,6 +98,7 @@ impl ProviderData {
             credits_percent,
             status_level: StatusLevel::Unknown, // Will be updated by status fetch
             status_description: None,
+            cost_history: Vec::new(), // TODO: Populate from cost scanner
         }
     }
 
@@ -119,6 +124,7 @@ impl ProviderData {
             credits_percent: None,
             status_level: StatusLevel::Unknown,
             status_description: None,
+            cost_history: Vec::new(),
         }
     }
 }
@@ -214,6 +220,8 @@ pub struct CodexBarApp {
     settings: Settings,
     tray_manager: Option<TrayManager>,
     preferences_window: PreferencesWindow,
+    shortcut_manager: Option<ShortcutManager>,
+    show_chart: bool,
 }
 
 impl CodexBarApp {
@@ -259,6 +267,7 @@ impl CodexBarApp {
                 credits_percent: None,
                 status_level: StatusLevel::Unknown,
                 status_description: None,
+                cost_history: Vec::new(),
             })
             .collect();
 
@@ -303,12 +312,26 @@ impl CodexBarApp {
             });
         }
 
+        // Initialize keyboard shortcuts
+        let shortcut_manager = match ShortcutManager::new() {
+            Ok(sm) => {
+                tracing::info!("Keyboard shortcut registered: Ctrl+Shift+U");
+                Some(sm)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to register keyboard shortcuts: {}", e);
+                None
+            }
+        };
+
         Self {
             state,
             selected_provider: 0,
             settings,
             tray_manager,
             preferences_window: PreferencesWindow::new(),
+            shortcut_manager,
+            show_chart: false,
         }
     }
 
@@ -418,6 +441,14 @@ fn create_provider(id: ProviderId) -> Box<dyn Provider> {
 
 impl eframe::App for CodexBarApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Check keyboard shortcuts
+        if let Some(ref shortcut_mgr) = self.shortcut_manager {
+            if shortcut_mgr.check_events() {
+                // Shortcut pressed - bring window to front
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+        }
+
         // Auto-refresh check (skip if interval is 0 = Manual)
         let should_refresh = {
             if self.settings.refresh_interval_secs == 0 {
@@ -825,6 +856,28 @@ impl eframe::App for CodexBarApp {
                                     ui.add_space(12.0);
                                     draw_cost_section(ui, cost_used, provider.cost_limit.as_deref(), provider.cost_period.as_deref());
                                 }
+
+                                // Cost history chart (toggle button)
+                                if !provider.cost_history.is_empty() || provider.cost_used.is_some() {
+                                    ui.add_space(8.0);
+                                    if ui.small_button(if self.show_chart { "▼ Hide Chart" } else { "▶ Show Chart" }).clicked() {
+                                        self.show_chart = !self.show_chart;
+                                    }
+
+                                    if self.show_chart && !provider.cost_history.is_empty() {
+                                        ui.add_space(8.0);
+                                        let points: Vec<ChartPoint> = provider.cost_history.iter()
+                                            .map(|(date, cost)| ChartPoint {
+                                                date: date.clone(),
+                                                value: *cost,
+                                                tokens: None,
+                                            })
+                                            .collect();
+                                        let bar_color = Theme::TAB_ACTIVE;
+                                        let mut chart = CostHistoryChart::new(points, bar_color);
+                                        chart.show(ui);
+                                    }
+                                }
                             }
                         });
                 } else if providers.is_empty() {
@@ -879,6 +932,26 @@ impl eframe::App for CodexBarApp {
                             }
                         }
 
+                        // Login button for providers that support CLI login
+                        if let Some(p) = providers.get(self.selected_provider) {
+                            let supports_login = matches!(
+                                p.name.as_str(),
+                                "claude" | "codex" | "gemini" | "copilot"
+                            );
+                            if supports_login {
+                                if menu_button(ui, "🔑", "Login...") {
+                                    // Open login in browser or run CLI
+                                    match p.name.as_str() {
+                                        "claude" => { let _ = open::that("https://claude.ai/login"); }
+                                        "codex" => { let _ = open::that("https://platform.openai.com/login"); }
+                                        "gemini" => { let _ = open::that("https://aistudio.google.com/"); }
+                                        "copilot" => { let _ = open::that("https://github.com/login/device"); }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+
                         if menu_button(ui, "⚙", "Settings...") {
                             self.preferences_window.open();
                         }
@@ -896,6 +969,17 @@ impl eframe::App for CodexBarApp {
                             sep_rect.top(),
                             Stroke::new(1.0, Theme::SEPARATOR),
                         );
+                        ui.add_space(4.0);
+
+                        // Keyboard shortcut hint
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Tip: Press Ctrl+Shift+U to open")
+                                    .size(10.0)
+                                    .color(Theme::TEXT_MUTED),
+                            );
+                        });
+
                         ui.add_space(4.0);
 
                         if menu_button(ui, "✕", "Quit") {

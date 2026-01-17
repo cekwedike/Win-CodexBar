@@ -17,6 +17,7 @@ mod settings;
 mod single_instance;
 mod status;
 mod tray;
+mod updater;
 
 use clap::Parser;
 use cli::{exit_codes, Cli, Commands};

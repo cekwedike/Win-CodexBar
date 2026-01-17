@@ -12,6 +12,7 @@ use crate::providers::*;
 use crate::settings::{ManualCookies, Settings};
 use crate::status::{fetch_provider_status, get_status_page_url, StatusLevel};
 use crate::tray::{IconOverlay, LoadingPattern, ProviderUsage, SurpriseAnimation, TrayManager, TrayMenuAction};
+use crate::updater::{self, UpdateInfo};
 
 const MAIN_PROVIDER_COUNT: usize = 6;
 
@@ -201,6 +202,10 @@ struct SharedState {
     surprise_animation: Option<SurpriseAnimation>,
     surprise_frame: u32,
     next_surprise_time: Instant,
+    // Update check state
+    update_available: Option<UpdateInfo>,
+    update_checked: bool,
+    update_dismissed: bool,
 }
 
 pub struct CodexBarApp {
@@ -266,6 +271,9 @@ impl CodexBarApp {
             surprise_animation: None,
             surprise_frame: 0,
             next_surprise_time: Instant::now() + random_surprise_delay(),
+            update_available: None,
+            update_checked: false,
+            update_dismissed: false,
         }));
 
         // Initialize system tray
@@ -276,6 +284,24 @@ impl CodexBarApp {
                 None
             }
         };
+
+        // Check for updates in background
+        {
+            let state = Arc::clone(&state);
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    if let Some(update) = updater::check_for_updates().await {
+                        if let Ok(mut s) = state.lock() {
+                            s.update_available = Some(update);
+                            s.update_checked = true;
+                        }
+                    } else if let Ok(mut s) = state.lock() {
+                        s.update_checked = true;
+                    }
+                });
+            });
+        }
 
         Self {
             state,
@@ -408,7 +434,7 @@ impl eframe::App for CodexBarApp {
         }
 
         // Get state
-        let (providers, is_refreshing, loading_pattern, loading_phase, surprise_state) = {
+        let (providers, is_refreshing, loading_pattern, loading_phase, surprise_state, update_info) = {
             if let Ok(mut state) = self.state.lock() {
                 // Advance loading animation phase
                 if state.is_refreshing {
@@ -445,9 +471,16 @@ impl eframe::App for CodexBarApp {
                     None
                 };
 
-                (state.providers.clone(), state.is_refreshing, state.loading_pattern, state.loading_phase, surprise)
+                // Get update info if not dismissed
+                let update = if state.update_dismissed {
+                    None
+                } else {
+                    state.update_available.clone()
+                };
+
+                (state.providers.clone(), state.is_refreshing, state.loading_pattern, state.loading_phase, surprise, update)
             } else {
-                (Vec::new(), false, LoadingPattern::default(), 0.0, None)
+                (Vec::new(), false, LoadingPattern::default(), 0.0, None, None)
             }
         };
 
@@ -539,6 +572,55 @@ impl eframe::App for CodexBarApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(Theme::BG_PRIMARY).inner_margin(16.0))
             .show(ctx, |ui| {
+                // ════════════════════════════════════════════════════════════
+                // UPDATE BANNER (if available)
+                // ════════════════════════════════════════════════════════════
+
+                if let Some(ref update) = update_info {
+                    egui::Frame::none()
+                        .fill(Color32::from_rgb(45, 140, 255)) // Blue banner
+                        .rounding(Rounding::same(10.0))
+                        .inner_margin(10.0)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new("🎉")
+                                        .size(14.0),
+                                );
+                                ui.label(
+                                    RichText::new(format!("Update available: {}", update.version))
+                                        .size(12.0)
+                                        .color(Color32::WHITE)
+                                        .strong(),
+                                );
+
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    // Dismiss button
+                                    if ui.add(
+                                        egui::Button::new(RichText::new("✕").size(12.0).color(Color32::WHITE))
+                                            .fill(Color32::TRANSPARENT)
+                                            .stroke(Stroke::NONE)
+                                    ).clicked() {
+                                        if let Ok(mut s) = self.state.lock() {
+                                            s.update_dismissed = true;
+                                        }
+                                    }
+
+                                    // Download button
+                                    let download_url = update.download_url.clone();
+                                    if ui.add(
+                                        egui::Button::new(RichText::new("Download").size(11.0).color(Color32::from_rgb(45, 140, 255)))
+                                            .fill(Color32::WHITE)
+                                            .rounding(Rounding::same(4.0))
+                                    ).clicked() {
+                                        let _ = open::that(&download_url);
+                                    }
+                                });
+                            });
+                        });
+                    ui.add_space(8.0);
+                }
+
                 // ════════════════════════════════════════════════════════════
                 // PROVIDERS CARD - Tab bar + More Providers together
                 // ════════════════════════════════════════════════════════════

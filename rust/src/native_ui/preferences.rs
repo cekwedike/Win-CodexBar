@@ -534,7 +534,7 @@ impl PreferencesWindow {
             ui.vertical(|ui| {
                 ui.label(RichText::new("CodexBar for Windows").size(16.0).strong());
                 ui.label(
-                    RichText::new("Version 0.1.0")
+                    RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION")))
                         .size(12.0)
                         .color(Theme::TEXT_MUTED),
                 );
@@ -550,9 +550,20 @@ impl PreferencesWindow {
 
         ui.horizontal(|ui| {
             if ui.link("GitHub Repository").clicked() {
+                let _ = open::that("https://github.com/Finesssee/Win-CodexBar");
+            }
+            ui.add_space(20.0);
+            if ui.link("Original macOS Version").clicked() {
                 let _ = open::that("https://github.com/steipete/CodexBar");
             }
         });
+
+        ui.add_space(20.0);
+
+        // Check for updates button
+        if ui.button("Check for Updates").clicked() {
+            let _ = open::that("https://github.com/Finesssee/Win-CodexBar/releases");
+        }
 
         ui.add_space(20.0);
 

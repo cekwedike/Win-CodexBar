@@ -45,3 +45,4 @@ tmpclaude-*
 .vscode/
 *.swp
 *.swo
+dist/

@@ -2,7 +2,9 @@
 //!
 //! Provides bar charts similar to the macOS SwiftUI Charts
 
-use eframe::egui::{self, Color32, RichText, Rounding, Stroke, Vec2};
+#![allow(dead_code)]
+
+use eframe::egui::{self, Color32, RichText, Rounding, Vec2};
 
 /// A single data point for the chart
 #[derive(Clone, Debug)]

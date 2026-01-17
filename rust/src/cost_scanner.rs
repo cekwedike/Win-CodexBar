@@ -82,6 +82,7 @@ impl ClaudePricing {
 }
 
 /// JSONL event structures for Codex
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct CodexEvent {
     #[serde(rename = "type")]
@@ -89,6 +90,7 @@ struct CodexEvent {
     event_msg: Option<CodexEventMsg>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct CodexEventMsg {
     #[serde(rename = "type")]
@@ -99,6 +101,7 @@ struct CodexEventMsg {
 }
 
 /// JSONL event structures for Claude
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct ClaudeEvent {
     #[serde(rename = "type")]
@@ -106,12 +109,14 @@ struct ClaudeEvent {
     message: Option<ClaudeMessage>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct ClaudeMessage {
     model: Option<String>,
     usage: Option<ClaudeUsage>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct ClaudeUsage {
     input_tokens: Option<u64>,
@@ -341,9 +346,105 @@ impl CostScanner {
 }
 
 /// Check if any cost usage sources are available
+#[allow(dead_code)]
 pub fn has_cost_usage_sources() -> bool {
     let scanner = CostScanner::new(1);
     scanner.get_codex_sessions_dir().exists() || scanner.get_claude_projects_dir().exists()
+}
+
+/// Get daily cost history for the last N days
+/// Returns Vec of (date_string, cost_usd) sorted by date
+pub fn get_daily_cost_history(provider: &str, days: u32) -> Vec<(String, f64)> {
+    let scanner = CostScanner::new(days);
+    let today = Utc::now().date_naive();
+    let mut daily_costs: HashMap<String, f64> = HashMap::new();
+
+    // Initialize all days with 0
+    for days_ago in 0..days {
+        let date = today - Duration::days(days_ago as i64);
+        let date_str = date.format("%Y-%m-%d").to_string();
+        daily_costs.insert(date_str, 0.0);
+    }
+
+    match provider {
+        "codex" => {
+            // Scan Codex logs by day
+            let sessions_dir = scanner.get_codex_sessions_dir();
+            if sessions_dir.exists() {
+                for days_ago in 0..days {
+                    let date = today - Duration::days(days_ago as i64);
+                    let date_str = date.format("%Y-%m-%d").to_string();
+                    let year = date.format("%Y").to_string();
+                    let month = date.format("%m").to_string();
+                    let day = date.format("%d").to_string();
+
+                    let day_dir = sessions_dir.join(&year).join(&month).join(&day);
+                    if day_dir.exists() {
+                        let mut day_cost = 0.0;
+                        if let Ok(entries) = fs::read_dir(&day_dir) {
+                            for entry in entries.flatten() {
+                                let path = entry.path();
+                                if path.extension().map_or(false, |e| e == "jsonl") {
+                                    day_cost += scan_codex_file_cost(&path);
+                                }
+                            }
+                        }
+                        daily_costs.insert(date_str, day_cost);
+                    }
+                }
+            }
+        }
+        "claude" => {
+            // For Claude, we need to check file modification times
+            // This is more complex, so we'll approximate using the summary for now
+            let summary = scanner.scan_claude();
+            if summary.total_cost_usd > 0.0 && days > 0 {
+                // Distribute evenly for now (TODO: actual daily breakdown)
+                let daily = summary.total_cost_usd / days as f64;
+                for (_, cost) in daily_costs.iter_mut() {
+                    *cost = daily;
+                }
+            }
+        }
+        _ => {}
+    }
+
+    // Convert to sorted vector
+    let mut result: Vec<(String, f64)> = daily_costs.into_iter().collect();
+    result.sort_by(|a, b| a.0.cmp(&b.0));
+    result
+}
+
+/// Scan a single Codex file and return its cost
+fn scan_codex_file_cost(path: &PathBuf) -> f64 {
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => return 0.0,
+    };
+
+    let reader = BufReader::new(file);
+    let mut current_model = String::from("gpt-4o");
+    let mut total_cost = 0.0;
+
+    for line in reader.lines().flatten() {
+        if let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) {
+            if let Some(model) = event.get("model").and_then(|m| m.as_str()) {
+                current_model = model.to_string();
+            }
+
+            if let Some(event_msg) = event.get("event_msg") {
+                if event_msg.get("type").and_then(|t| t.as_str()) == Some("token_count") {
+                    let input = event_msg.get("input_tokens").and_then(|t| t.as_u64()).unwrap_or(0);
+                    let cached = event_msg.get("cached_input_tokens").and_then(|t| t.as_u64()).unwrap_or(0);
+                    let output = event_msg.get("output_tokens").and_then(|t| t.as_u64()).unwrap_or(0);
+
+                    total_cost += CodexPricing::cost_usd(&current_model, input, cached, output);
+                }
+            }
+        }
+    }
+
+    total_cost
 }
 
 #[cfg(test)]

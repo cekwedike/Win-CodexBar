@@ -9,6 +9,7 @@ use super::charts::{ChartPoint, CostHistoryChart};
 use super::preferences::PreferencesWindow;
 use super::theme::{provider_icon, Theme};
 use crate::core::{FetchContext, Provider, ProviderId, ProviderFetchResult, RateWindow};
+use crate::cost_scanner::get_daily_cost_history;
 use crate::providers::*;
 use crate::settings::{ManualCookies, Settings};
 use crate::shortcuts::ShortcutManager;
@@ -393,6 +394,12 @@ impl CodexBarApp {
                             if let Ok(Some(status)) = status_result {
                                 result.status_level = status.level;
                                 result.status_description = Some(status.description);
+                            }
+
+                            // Populate cost history for providers that support it
+                            let provider_name_lower = provider_name.to_lowercase();
+                            if provider_name_lower == "codex" || provider_name_lower == "claude" {
+                                result.cost_history = get_daily_cost_history(&provider_name_lower, 30);
                             }
 
                             // Update UI immediately as each provider completes
@@ -940,12 +947,48 @@ impl eframe::App for CodexBarApp {
                             );
                             if supports_login {
                                 if menu_button(ui, "🔑", "Login...") {
-                                    // Open login in browser or run CLI
+                                    // Try CLI login first, then fall back to web
                                     match p.name.as_str() {
-                                        "claude" => { let _ = open::that("https://claude.ai/login"); }
-                                        "codex" => { let _ = open::that("https://platform.openai.com/login"); }
-                                        "gemini" => { let _ = open::that("https://aistudio.google.com/"); }
-                                        "copilot" => { let _ = open::that("https://github.com/login/device"); }
+                                        "claude" => {
+                                            // Try to run 'claude /login' in a terminal
+                                            if which::which("claude").is_ok() {
+                                                let _ = std::process::Command::new("cmd")
+                                                    .args(["/c", "start", "cmd", "/k", "claude", "/login"])
+                                                    .spawn();
+                                            } else {
+                                                let _ = open::that("https://claude.ai/login");
+                                            }
+                                        }
+                                        "codex" => {
+                                            // Try to run 'codex auth login' in a terminal
+                                            if which::which("codex").is_ok() {
+                                                let _ = std::process::Command::new("cmd")
+                                                    .args(["/c", "start", "cmd", "/k", "codex", "auth", "login"])
+                                                    .spawn();
+                                            } else {
+                                                let _ = open::that("https://platform.openai.com/login");
+                                            }
+                                        }
+                                        "gemini" => {
+                                            // Try to run 'gcloud auth login' in a terminal
+                                            if which::which("gcloud").is_ok() {
+                                                let _ = std::process::Command::new("cmd")
+                                                    .args(["/c", "start", "cmd", "/k", "gcloud", "auth", "login"])
+                                                    .spawn();
+                                            } else {
+                                                let _ = open::that("https://aistudio.google.com/");
+                                            }
+                                        }
+                                        "copilot" => {
+                                            // Try to run 'gh auth login -w' in a terminal
+                                            if which::which("gh").is_ok() {
+                                                let _ = std::process::Command::new("cmd")
+                                                    .args(["/c", "start", "cmd", "/k", "gh", "auth", "login", "-w"])
+                                                    .spawn();
+                                            } else {
+                                                let _ = open::that("https://github.com/login/device");
+                                            }
+                                        }
                                         _ => {}
                                     }
                                 }

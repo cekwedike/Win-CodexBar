@@ -10,7 +10,9 @@ const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub struct UpdateInfo {
     pub version: String,
     pub download_url: String,
+    #[allow(dead_code)]
     pub release_url: String,
+    #[allow(dead_code)]
     pub release_notes: String,
 }
 
@@ -100,6 +102,7 @@ fn is_newer_version(remote: &str, current: &str) -> bool {
 }
 
 /// Get the current version
+#[allow(dead_code)]
 pub fn current_version() -> &'static str {
     CURRENT_VERSION
 }

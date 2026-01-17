@@ -43,6 +43,7 @@ impl Theme {
     pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(30, 30, 35);
 
     /// Secondary text - muted
+    #[allow(dead_code)]
     pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(100, 100, 110);
 
     /// Muted text - light gray

@@ -14,6 +14,7 @@ pub enum UsageLevel {
     /// 95-100% used - red
     Critical,
     /// Unknown/error state - gray
+    #[allow(dead_code)]
     Unknown,
 }
 
@@ -40,6 +41,7 @@ impl UsageLevel {
 }
 
 /// Badge type for status indicators
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BadgeType {
     /// Warning indicator (yellow)

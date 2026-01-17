@@ -8,4 +8,3 @@ mod preferences;
 mod theme;
 
 pub use app::run;
-pub use charts::{ChartPoint, CostHistoryChart, CreditsHistoryChart};

@@ -2,11 +2,13 @@
 //!
 //! Provides system-wide hotkeys to open the menu
 
+#![allow(dead_code)]
+
 use global_hotkey::{
     hotkey::{Code, HotKey, Modifiers},
     GlobalHotKeyEvent, GlobalHotKeyManager,
 };
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 /// Keyboard shortcut manager

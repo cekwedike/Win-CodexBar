@@ -16,6 +16,7 @@ const ICON_SIZE: u32 = 32;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SurpriseAnimation {
     /// No animation
+    #[allow(dead_code)]
     None,
     /// Bars flash bright white briefly
     Blink,
@@ -61,6 +62,7 @@ pub enum IconOverlay {
     /// Error state - grayed out icon with X
     Error,
     /// Stale data - dim icon with clock indicator
+    #[allow(dead_code)]
     Stale,
     /// Incident - warning badge overlay
     Incident,
@@ -73,6 +75,7 @@ pub enum IconOverlay {
 pub struct ProviderUsage {
     pub name: String,
     pub session_percent: f64,
+    #[allow(dead_code)]
     pub weekly_percent: f64,
 }
 
@@ -142,6 +145,7 @@ impl TrayManager {
     }
 
     /// Show error state on the tray icon
+    #[allow(dead_code)]
     pub fn show_error(&self, provider_name: &str, error_msg: &str) {
         let icon = create_bar_icon(0.0, 0.0, IconOverlay::Error);
         let _ = self.tray_icon.set_icon(Some(icon));
@@ -150,6 +154,7 @@ impl TrayManager {
     }
 
     /// Show stale data indicator
+    #[allow(dead_code)]
     pub fn show_stale(&self, session_percent: f64, weekly_percent: f64, provider_name: &str, age_minutes: u64) {
         let icon = create_bar_icon(session_percent, weekly_percent, IconOverlay::Stale);
         let _ = self.tray_icon.set_icon(Some(icon));

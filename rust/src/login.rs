@@ -2,6 +2,8 @@
 //!
 //! Runs CLI login commands and captures output/URLs
 
+#![allow(dead_code)]
+
 use std::process::{Command, Stdio};
 use std::io::{BufRead, BufReader};
 use regex_lite::Regex;

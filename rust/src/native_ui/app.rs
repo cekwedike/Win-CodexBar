@@ -1174,10 +1174,10 @@ fn menu_button(ui: &mut egui::Ui, icon: &str, label: &str) -> bool {
 pub fn run() -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([420.0, 520.0])
-            .with_min_inner_size([420.0, 520.0])
-            .with_max_inner_size([420.0, 520.0])
-            .with_resizable(false)
+            .with_inner_size([420.0, 620.0])
+            .with_min_inner_size([420.0, 500.0])
+            .with_max_inner_size([420.0, 800.0])
+            .with_resizable(true)
             .with_decorations(true)
             .with_transparent(false)
             .with_always_on_top()

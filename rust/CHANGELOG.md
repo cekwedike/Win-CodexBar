@@ -8,6 +8,20 @@ All notable changes to the Win-CodexBar Windows port will be documented in this 
 - **Amp**: New Sourcegraph/Cody provider with API token and config file support
 - **Synthetic**: New Synthetic provider with usage tracking
 
+### Preferences UI
+- **API Keys Tab**: New tab for configuring provider access tokens
+  - Glassmorphism-styled provider cards with status badges
+  - Password-masked API key input with validation
+  - Environment variable hints (e.g., `SRC_ACCESS_TOKEN`)
+  - Dashboard links for quick access to provider settings
+  - Support for Amp, Synthetic, Copilot, and Zed AI
+- **Tab Icons**: Added emoji icons to preference tabs for visual clarity
+- **Resizable Window**: Preferences window now resizable with improved layout
+
+### Provider Icons
+- **Amp**: ⚡ icon with Sourcegraph orange-red brand color
+- **Synthetic**: ◇ icon with purple brand color
+
 ### Animations
 - **Tilt**: New surprise animation that tilts the tray icon
 - **Unbraid**: New loading animation pattern with morphing effect
@@ -18,6 +32,7 @@ All notable changes to the Win-CodexBar Windows port will be documented in this 
 - Provider count increased from 15 to 17
 
 ### Technical
+- Added `ApiKeys` storage system with secure file persistence
 - Fixed match arms in `create_provider` functions for new providers
 - Added `Win32_System_Console` feature for console window management
 - Build now uses GNU toolchain as fallback when MSVC linker unavailable

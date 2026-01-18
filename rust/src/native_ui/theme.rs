@@ -205,6 +205,8 @@ pub fn provider_icon(name: &str) -> &'static str {
         "opencode" => "○",
         "kimi" => "☾",
         "kimik2" | "kimi k2" => "☾",
+        "amp" => "⚡",
+        "synthetic" => "◇",
         _ => "●",
     }
 }
@@ -226,6 +228,8 @@ pub fn provider_color(name: &str) -> Color32 {
         "minimax" => Color32::from_rgb(255, 100, 150),
         "opencode" => Color32::from_rgb(200, 200, 200),
         "kimi" | "kimik2" | "kimi k2" => Color32::from_rgb(100, 100, 255),
+        "amp" => Color32::from_rgb(255, 90, 60),       // Sourcegraph orange-red
+        "synthetic" => Color32::from_rgb(160, 120, 255), // Synthetic purple
         _ => Theme::ACCENT_PRIMARY,
     }
 }

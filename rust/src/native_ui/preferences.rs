@@ -1,11 +1,11 @@
 //! Preferences window for CodexBar
 //!
-//! A tabbed settings window similar to the macOS version
+//! A tabbed settings window with a bold "Midnight Terminal" aesthetic
 
 use eframe::egui::{self, Color32, RichText, Rounding, Stroke, Vec2};
 
-use super::theme::Theme;
-use crate::settings::{ManualCookies, Settings};
+use super::theme::{provider_color, provider_icon, Theme};
+use crate::settings::{ApiKeys, ManualCookies, Settings, get_api_key_providers};
 use crate::core::ProviderId;
 
 /// Which preferences tab is active
@@ -14,6 +14,7 @@ pub enum PreferencesTab {
     #[default]
     General,
     Providers,
+    ApiKeys,
     Cookies,
     Advanced,
     About,
@@ -24,9 +25,21 @@ impl PreferencesTab {
         match self {
             PreferencesTab::General => "General",
             PreferencesTab::Providers => "Providers",
+            PreferencesTab::ApiKeys => "API Keys",
             PreferencesTab::Cookies => "Cookies",
             PreferencesTab::Advanced => "Advanced",
             PreferencesTab::About => "About",
+        }
+    }
+
+    fn icon(&self) -> &'static str {
+        match self {
+            PreferencesTab::General => "⚙",
+            PreferencesTab::Providers => "◈",
+            PreferencesTab::ApiKeys => "🔑",
+            PreferencesTab::Cookies => "🍪",
+            PreferencesTab::Advanced => "⚡",
+            PreferencesTab::About => "ℹ",
         }
     }
 }
@@ -42,6 +55,12 @@ pub struct PreferencesWindow {
     new_cookie_provider: String,
     new_cookie_value: String,
     cookie_status_msg: Option<(String, bool)>, // (message, is_error)
+    // API key management state
+    api_keys: ApiKeys,
+    new_api_key_provider: String,
+    new_api_key_value: String,
+    show_api_key_input: bool,
+    api_key_status_msg: Option<(String, bool)>,
 }
 
 impl Default for PreferencesWindow {
@@ -55,6 +74,11 @@ impl Default for PreferencesWindow {
             new_cookie_provider: String::new(),
             new_cookie_value: String::new(),
             cookie_status_msg: None,
+            api_keys: ApiKeys::load(),
+            new_api_key_provider: String::new(),
+            new_api_key_value: String::new(),
+            show_api_key_input: false,
+            api_key_status_msg: None,
         }
     }
 }
@@ -68,8 +92,12 @@ impl PreferencesWindow {
         self.is_open = true;
         self.settings = Settings::load();
         self.cookies = ManualCookies::load();
+        self.api_keys = ApiKeys::load();
         self.settings_changed = false;
         self.cookie_status_msg = None;
+        self.api_key_status_msg = None;
+        self.new_api_key_value.clear();
+        self.show_api_key_input = false;
     }
 
     pub fn close(&mut self) {
@@ -87,26 +115,30 @@ impl PreferencesWindow {
 
         egui::Window::new("Preferences")
             .collapsible(false)
-            .resizable(false)
-            .default_size(Vec2::new(450.0, 400.0))
+            .resizable(true)
+            .default_size(Vec2::new(520.0, 480.0))
+            .min_size(Vec2::new(480.0, 400.0))
             .show(ctx, |ui| {
-                // Tab bar
+                // Tab bar with icons
                 ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
                     for tab in [
                         PreferencesTab::General,
                         PreferencesTab::Providers,
+                        PreferencesTab::ApiKeys,
                         PreferencesTab::Cookies,
                         PreferencesTab::Advanced,
                         PreferencesTab::About,
                     ] {
                         let is_selected = self.active_tab == tab;
+                        let label = format!("{} {}", tab.icon(), tab.label());
                         let btn = egui::Button::new(
-                            RichText::new(tab.label())
-                                .size(13.0)
+                            RichText::new(label)
+                                .size(12.0)
                                 .color(if is_selected {
                                     Color32::WHITE
                                 } else {
-                                    Theme::TEXT_PRIMARY
+                                    Theme::TEXT_MUTED
                                 }),
                         )
                         .fill(if is_selected {
@@ -114,8 +146,8 @@ impl PreferencesWindow {
                         } else {
                             Theme::TAB_INACTIVE
                         })
-                        .rounding(Rounding::same(6.0))
-                        .min_size(Vec2::new(80.0, 28.0));
+                        .rounding(Rounding::same(8.0))
+                        .min_size(Vec2::new(72.0, 32.0));
 
                         if ui.add(btn).clicked() {
                             self.active_tab = tab;
@@ -123,34 +155,44 @@ impl PreferencesWindow {
                     }
                 });
 
-                ui.add_space(16.0);
+                ui.add_space(12.0);
 
-                // Separator
+                // Glowing separator
                 let sep_rect = ui.available_rect_before_wrap();
                 ui.painter().hline(
                     sep_rect.x_range(),
                     sep_rect.top(),
-                    Stroke::new(1.0, Theme::SEPARATOR),
+                    Stroke::new(2.0, Theme::ACCENT_PRIMARY.gamma_multiply(0.3)),
                 );
-                ui.add_space(16.0);
+                ui.add_space(12.0);
 
-                // Tab content
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    match self.active_tab {
-                        PreferencesTab::General => self.show_general_tab(ui),
-                        PreferencesTab::Providers => self.show_providers_tab(ui),
-                        PreferencesTab::Cookies => self.show_cookies_tab(ui),
-                        PreferencesTab::Advanced => self.show_advanced_tab(ui),
-                        PreferencesTab::About => self.show_about_tab(ui),
-                    }
-                });
+                // Tab content with scroll
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        match self.active_tab {
+                            PreferencesTab::General => self.show_general_tab(ui),
+                            PreferencesTab::Providers => self.show_providers_tab(ui),
+                            PreferencesTab::ApiKeys => self.show_api_keys_tab(ui),
+                            PreferencesTab::Cookies => self.show_cookies_tab(ui),
+                            PreferencesTab::Advanced => self.show_advanced_tab(ui),
+                            PreferencesTab::About => self.show_about_tab(ui),
+                        }
+                    });
 
                 ui.add_space(16.0);
 
                 // Close button
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Close").clicked() {
+                        let close_btn = egui::Button::new(
+                            RichText::new("Close").size(13.0).color(Color32::WHITE)
+                        )
+                        .fill(Theme::CARD_BG)
+                        .rounding(Rounding::same(6.0))
+                        .min_size(Vec2::new(80.0, 32.0));
+
+                        if ui.add(close_btn).clicked() {
                             self.close();
                         }
                     });
@@ -522,6 +564,305 @@ impl PreferencesWindow {
                 .size(11.0)
                 .color(Theme::TEXT_MUTED),
         );
+    }
+
+    /// Show the API Keys configuration tab with a distinctive design
+    fn show_api_keys_tab(&mut self, ui: &mut egui::Ui) {
+        // Header with glow effect
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("🔑").size(24.0));
+            ui.add_space(8.0);
+            ui.vertical(|ui| {
+                ui.label(
+                    RichText::new("API Keys")
+                        .size(18.0)
+                        .color(Theme::TEXT_PRIMARY)
+                        .strong(),
+                );
+                ui.label(
+                    RichText::new("Configure access tokens for providers that require authentication")
+                        .size(11.0)
+                        .color(Theme::TEXT_MUTED),
+                );
+            });
+        });
+
+        ui.add_space(16.0);
+
+        // Status message with glow
+        if let Some((msg, is_error)) = &self.api_key_status_msg {
+            let (bg_color, text_color) = if *is_error {
+                (Color32::from_rgba_unmultiplied(255, 60, 80, 30), Theme::RED)
+            } else {
+                (Color32::from_rgba_unmultiplied(0, 255, 136, 30), Theme::GREEN)
+            };
+
+            egui::Frame::none()
+                .fill(bg_color)
+                .rounding(Rounding::same(8.0))
+                .inner_margin(egui::Margin::symmetric(12.0, 8.0))
+                .show(ui, |ui| {
+                    ui.label(RichText::new(msg).size(12.0).color(text_color));
+                });
+            ui.add_space(12.0);
+        }
+
+        // Provider cards
+        let api_key_providers = get_api_key_providers();
+
+        for provider_info in &api_key_providers {
+            let provider_id = provider_info.id.cli_name();
+            let has_key = self.api_keys.has_key(provider_id);
+            let is_enabled = self.settings.enabled_providers.contains(provider_id);
+            let icon = provider_icon(provider_id);
+            let color = provider_color(provider_id);
+
+            // Provider card with glassmorphism effect
+            let card_bg = if has_key {
+                Color32::from_rgba_unmultiplied(0, 255, 136, 15)
+            } else {
+                Theme::CARD_BG
+            };
+
+            egui::Frame::none()
+                .fill(card_bg)
+                .stroke(Stroke::new(
+                    1.0,
+                    if has_key { Theme::GREEN.gamma_multiply(0.4) } else { Theme::CARD_BORDER },
+                ))
+                .rounding(Rounding::same(12.0))
+                .inner_margin(egui::Margin::same(16.0))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        // Provider icon with brand color
+                        ui.label(RichText::new(icon).size(28.0).color(color));
+                        ui.add_space(12.0);
+
+                        ui.vertical(|ui| {
+                            // Provider name and status
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(provider_info.name)
+                                        .size(14.0)
+                                        .color(Theme::TEXT_PRIMARY)
+                                        .strong(),
+                                );
+
+                                // Status badge
+                                if has_key {
+                                    let badge = egui::Frame::none()
+                                        .fill(Theme::GREEN.gamma_multiply(0.2))
+                                        .rounding(Rounding::same(4.0))
+                                        .inner_margin(egui::Margin::symmetric(6.0, 2.0));
+                                    badge.show(ui, |ui| {
+                                        ui.label(
+                                            RichText::new("✓ Configured")
+                                                .size(10.0)
+                                                .color(Theme::GREEN),
+                                        );
+                                    });
+                                } else if is_enabled {
+                                    let badge = egui::Frame::none()
+                                        .fill(Theme::ORANGE.gamma_multiply(0.2))
+                                        .rounding(Rounding::same(4.0))
+                                        .inner_margin(egui::Margin::symmetric(6.0, 2.0));
+                                    badge.show(ui, |ui| {
+                                        ui.label(
+                                            RichText::new("⚠ Needs Key")
+                                                .size(10.0)
+                                                .color(Theme::ORANGE),
+                                        );
+                                    });
+                                }
+                            });
+
+                            // Help text
+                            if let Some(help) = provider_info.api_key_help {
+                                ui.label(
+                                    RichText::new(help)
+                                        .size(11.0)
+                                        .color(Theme::TEXT_MUTED),
+                                );
+                            }
+
+                            // Environment variable hint
+                            if let Some(env_var) = provider_info.api_key_env_var {
+                                ui.add_space(4.0);
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new("Env:")
+                                            .size(10.0)
+                                            .color(Theme::TEXT_DIM),
+                                    );
+                                    ui.label(
+                                        RichText::new(env_var)
+                                            .size(10.0)
+                                            .color(Theme::ACCENT_PRIMARY)
+                                            .monospace(),
+                                    );
+                                });
+                            }
+                        });
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            // Action buttons
+                            if has_key {
+                                // Remove button
+                                let remove_btn = egui::Button::new(
+                                    RichText::new("Remove").size(11.0).color(Theme::RED)
+                                )
+                                .fill(Theme::RED.gamma_multiply(0.15))
+                                .rounding(Rounding::same(6.0));
+
+                                if ui.add(remove_btn).clicked() {
+                                    self.api_keys.remove(provider_id);
+                                    let _ = self.api_keys.save();
+                                    self.api_key_status_msg = Some((
+                                        format!("Removed API key for {}", provider_info.name),
+                                        false,
+                                    ));
+                                }
+
+                                ui.add_space(8.0);
+
+                                // Show masked key
+                                if let Some(key_info) = self.api_keys.get_all_for_display()
+                                    .iter()
+                                    .find(|k| k.provider_id == provider_id)
+                                {
+                                    ui.label(
+                                        RichText::new(&key_info.masked_key)
+                                            .size(11.0)
+                                            .color(Theme::TEXT_MUTED)
+                                            .monospace(),
+                                    );
+                                }
+                            } else {
+                                // Configure button
+                                let config_btn = egui::Button::new(
+                                    RichText::new("+ Add Key").size(11.0).color(Color32::WHITE)
+                                )
+                                .fill(Theme::ACCENT_PRIMARY.gamma_multiply(0.8))
+                                .rounding(Rounding::same(6.0));
+
+                                if ui.add(config_btn).clicked() {
+                                    self.new_api_key_provider = provider_id.to_string();
+                                    self.show_api_key_input = true;
+                                    self.new_api_key_value.clear();
+                                }
+
+                                // Dashboard link
+                                if let Some(url) = provider_info.dashboard_url {
+                                    ui.add_space(8.0);
+                                    if ui.small_button("Dashboard →").clicked() {
+                                        let _ = open::that(url);
+                                    }
+                                }
+                            }
+                        });
+                    });
+                });
+
+            ui.add_space(8.0);
+        }
+
+        // API Key input modal
+        if self.show_api_key_input {
+            ui.add_space(16.0);
+
+            // Find provider info
+            let provider_name = ProviderId::from_cli_name(&self.new_api_key_provider)
+                .map(|id| id.display_name())
+                .unwrap_or(&self.new_api_key_provider);
+
+            egui::Frame::none()
+                .fill(Theme::BG_SECONDARY)
+                .stroke(Stroke::new(2.0, Theme::ACCENT_PRIMARY.gamma_multiply(0.5)))
+                .rounding(Rounding::same(12.0))
+                .inner_margin(egui::Margin::same(20.0))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new(format!("Enter API Key for {}", provider_name))
+                            .size(14.0)
+                            .color(Theme::TEXT_PRIMARY)
+                            .strong(),
+                    );
+                    ui.add_space(12.0);
+
+                    // Password-style input
+                    let text_edit = egui::TextEdit::singleline(&mut self.new_api_key_value)
+                        .password(true)
+                        .desired_width(ui.available_width() - 20.0)
+                        .hint_text("Paste your API key here...");
+                    ui.add(text_edit);
+
+                    ui.add_space(12.0);
+
+                    ui.horizontal(|ui| {
+                        let can_save = !self.new_api_key_value.trim().is_empty();
+
+                        let save_btn = egui::Button::new(
+                            RichText::new("Save Key").size(12.0).color(Color32::WHITE)
+                        )
+                        .fill(if can_save { Theme::GREEN } else { Theme::CARD_BG })
+                        .rounding(Rounding::same(6.0))
+                        .min_size(Vec2::new(100.0, 32.0));
+
+                        if ui.add_enabled(can_save, save_btn).clicked() {
+                            self.api_keys.set(
+                                &self.new_api_key_provider,
+                                self.new_api_key_value.trim(),
+                                None,
+                            );
+                            if let Err(e) = self.api_keys.save() {
+                                self.api_key_status_msg = Some((format!("Failed to save: {}", e), true));
+                            } else {
+                                self.api_key_status_msg = Some((
+                                    format!("API key saved for {}", provider_name),
+                                    false,
+                                ));
+                                self.show_api_key_input = false;
+                                self.new_api_key_value.clear();
+                            }
+                        }
+
+                        ui.add_space(8.0);
+
+                        let cancel_btn = egui::Button::new(
+                            RichText::new("Cancel").size(12.0).color(Theme::TEXT_MUTED)
+                        )
+                        .fill(Theme::CARD_BG)
+                        .rounding(Rounding::same(6.0));
+
+                        if ui.add(cancel_btn).clicked() {
+                            self.show_api_key_input = false;
+                            self.new_api_key_value.clear();
+                        }
+                    });
+                });
+        }
+
+        ui.add_space(20.0);
+
+        // Help section
+        egui::Frame::none()
+            .fill(Theme::CARD_BG.gamma_multiply(0.5))
+            .rounding(Rounding::same(8.0))
+            .inner_margin(egui::Margin::same(12.0))
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new("💡 Tip")
+                        .size(12.0)
+                        .color(Theme::ACCENT_PRIMARY)
+                        .strong(),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("API keys are stored securely in your local config directory. You can also set environment variables instead of saving keys here.")
+                        .size(11.0)
+                        .color(Theme::TEXT_MUTED),
+                );
+            });
     }
 
     fn show_about_tab(&mut self, ui: &mut egui::Ui) {

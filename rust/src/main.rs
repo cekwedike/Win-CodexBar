@@ -9,6 +9,7 @@ mod browser;
 mod cli;
 mod core;
 mod cost_scanner;
+mod host;
 mod logging;
 mod login;
 mod native_ui;

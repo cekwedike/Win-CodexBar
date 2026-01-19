@@ -3,6 +3,8 @@
 //! Monitors and manages child web probe processes to prevent orphaned processes.
 //! Ensures that browser automation or scraping processes are properly cleaned up.
 
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};

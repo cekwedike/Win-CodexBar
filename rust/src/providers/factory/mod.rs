@@ -1,17 +1,58 @@
-//! Factory (Windsurf) provider implementation
+//! Droid (Factory) provider implementation
 //!
-//! Fetches usage data from Windsurf/Codeium's local state or API
-//! Windsurf stores usage info in local configuration files
+//! Fetches usage data from Factory.ai (Droid)
+//! Uses browser cookies or WorkOS refresh tokens for authentication
 
 use async_trait::async_trait;
-use std::path::PathBuf;
+use serde::Deserialize;
 
+use crate::browser::cookies::CookieExtractor;
+use crate::browser::detection::BrowserDetector;
 use crate::core::{
     FetchContext, Provider, ProviderId, ProviderError, ProviderFetchResult,
     ProviderMetadata, RateWindow, SourceMode, UsageSnapshot,
 };
 
-/// Factory (Windsurf) provider
+/// Factory.ai API endpoints
+const FACTORY_AUTH_URL: &str = "https://app.factory.ai/api/app/auth/me";
+const FACTORY_USAGE_URL: &str = "https://app.factory.ai/api/organization/subscription/usage";
+
+/// Factory usage response
+#[derive(Debug, Deserialize)]
+struct FactoryUsageResponse {
+    #[serde(default)]
+    standard: Option<FactoryUsageWindow>,
+    #[serde(default)]
+    premium: Option<FactoryUsageWindow>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FactoryUsageWindow {
+    used: Option<f64>,
+    allowance: Option<f64>,
+}
+
+/// Factory auth response
+#[derive(Debug, Deserialize)]
+struct FactoryAuthResponse {
+    user: Option<FactoryUser>,
+    organization: Option<FactoryOrganization>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FactoryUser {
+    email: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FactoryOrganization {
+    name: Option<String>,
+    tier: Option<String>,
+    #[serde(rename = "planName")]
+    plan_name: Option<String>,
+}
+
+/// Droid (Factory) provider
 pub struct FactoryProvider {
     metadata: ProviderMetadata,
 }
@@ -21,169 +62,167 @@ impl FactoryProvider {
         Self {
             metadata: ProviderMetadata {
                 id: ProviderId::Factory,
-                display_name: "Windsurf",
-                session_label: "Session",
-                weekly_label: "Weekly",
+                display_name: "Droid",
+                session_label: "Standard",
+                weekly_label: "Premium",
                 supports_opus: false,
                 supports_credits: true,
                 default_enabled: false,
                 is_primary: false,
-                dashboard_url: Some("https://codeium.com/account"),
-                status_page_url: Some("https://status.codeium.com"),
+                dashboard_url: Some("https://app.factory.ai"),
+                status_page_url: None,
             },
         }
     }
 
-    /// Try to read usage from Windsurf local config
-    fn get_windsurf_config_path() -> Option<PathBuf> {
-        // Windsurf stores config in AppData on Windows
-        #[cfg(target_os = "windows")]
-        {
-            dirs::config_dir().map(|p| p.join("Windsurf").join("User").join("globalStorage").join("codeium.codeium"))
+    /// Get cookies for Factory.ai from browser
+    fn get_cookies(&self) -> Result<String, ProviderError> {
+        let browsers = BrowserDetector::detect_all();
+
+        if browsers.is_empty() {
+            return Err(ProviderError::NoCookies);
         }
-        #[cfg(not(target_os = "windows"))]
-        {
-            dirs::config_dir().map(|p| p.join("Windsurf").join("User").join("globalStorage").join("codeium.codeium"))
-        }
-    }
 
-    /// Try to find the windsurf CLI
-    fn which_windsurf() -> Option<PathBuf> {
-        // Check common locations
-        let possible_paths = [
-            which::which("windsurf").ok(),
-            // Windows-specific paths
-            #[cfg(target_os = "windows")]
-            dirs::data_local_dir().map(|p| p.join("Programs").join("Windsurf").join("windsurf.exe")),
-            #[cfg(not(target_os = "windows"))]
-            None,
-        ];
-
-        possible_paths.into_iter().flatten().find(|p| p.exists())
-    }
-
-    /// Probe the Windsurf CLI for usage info
-    async fn probe_cli(&self) -> Result<UsageSnapshot, ProviderError> {
-        let windsurf_path = Self::which_windsurf().ok_or_else(|| {
-            ProviderError::NotInstalled("Windsurf not found. Install from https://codeium.com/windsurf".to_string())
-        })?;
-
-        // Windsurf CLI doesn't have a direct usage command yet
-        // Check if the binary exists to confirm installation
-        if windsurf_path.exists() {
-            // Return placeholder - Windsurf doesn't expose usage via CLI yet
-            let usage = UsageSnapshot::new(RateWindow::new(0.0))
-                .with_login_method("Windsurf (installed)");
-            Ok(usage)
-        } else {
-            Err(ProviderError::NotInstalled("Windsurf CLI not found".to_string()))
-        }
-    }
-
-    /// Try to read usage from local config files
-    async fn read_local_config(&self) -> Result<UsageSnapshot, ProviderError> {
-        let config_path = Self::get_windsurf_config_path().ok_or_else(|| {
-            ProviderError::NotInstalled("Windsurf config directory not found".to_string())
-        })?;
-
-        // Check for usage/state file
-        let state_file = config_path.join("state.json");
-        if state_file.exists() {
-            if let Ok(content) = tokio::fs::read_to_string(&state_file).await {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                    return self.parse_state_json(&json);
+        // Try each browser to find Factory cookies
+        for browser in &browsers {
+            if let Ok(cookies) = CookieExtractor::extract_for_domain(browser, "app.factory.ai") {
+                if !cookies.is_empty() {
+                    // Convert to cookie header string
+                    let cookie_str = cookies.iter()
+                        .map(|c| c.to_header_value())
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    return Ok(cookie_str);
                 }
             }
         }
 
-        Err(ProviderError::NotInstalled("Windsurf state file not found".to_string()))
+        Err(ProviderError::NoCookies)
     }
 
-    fn parse_state_json(&self, json: &serde_json::Value) -> Result<UsageSnapshot, ProviderError> {
-        // Parse Windsurf state format
-        let used_percent = json.get("usage")
-            .and_then(|u| u.get("percent"))
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-
-        let email = json.get("user")
-            .and_then(|u| u.get("email"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        let mut usage = UsageSnapshot::new(RateWindow::new(used_percent))
-            .with_login_method("Windsurf");
-
-        if let Some(email) = email {
-            usage = usage.with_email(email);
-        }
-
-        Ok(usage)
-    }
-
-    /// Fetch usage via Codeium web API
-    async fn fetch_via_web(&self) -> Result<UsageSnapshot, ProviderError> {
-        // Codeium API requires authentication token from local config
-        let config_path = Self::get_windsurf_config_path()
-            .ok_or_else(|| ProviderError::NoCookies)?;
-
-        let api_key_file = config_path.join("api_key");
-        if !api_key_file.exists() {
-            return Err(ProviderError::AuthRequired);
-        }
-
-        let api_key = tokio::fs::read_to_string(&api_key_file).await
-            .map_err(|e| ProviderError::Other(e.to_string()))?
-            .trim()
-            .to_string();
-
+    /// Fetch auth info from Factory API
+    async fn fetch_auth_info(&self, cookies: &str) -> Result<FactoryAuthResponse, ProviderError> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| ProviderError::Other(e.to_string()))?;
 
         let resp = client
-            .get("https://api.codeium.com/user/usage")
-            .header("Authorization", format!("Bearer {}", api_key))
+            .get(FACTORY_AUTH_URL)
+            .header("Cookie", cookies)
+            .header("Accept", "application/json")
             .send()
             .await?;
 
-        if !resp.status().is_success() {
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
             return Err(ProviderError::AuthRequired);
         }
 
-        let json: serde_json::Value = resp.json().await
-            .map_err(|e| ProviderError::Parse(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(ProviderError::Other(format!(
+                "Factory auth API returned status {}",
+                resp.status()
+            )));
+        }
 
-        self.parse_api_response(&json)
+        resp.json().await
+            .map_err(|e| ProviderError::Parse(e.to_string()))
     }
 
-    fn parse_api_response(&self, json: &serde_json::Value) -> Result<UsageSnapshot, ProviderError> {
-        let used = json.get("used_credits")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
+    /// Fetch usage from Factory API
+    async fn fetch_usage_api(&self, cookies: &str) -> Result<FactoryUsageResponse, ProviderError> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| ProviderError::Other(e.to_string()))?;
 
-        let limit = json.get("credit_limit")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(100.0);
+        let resp = client
+            .get(FACTORY_USAGE_URL)
+            .header("Cookie", cookies)
+            .header("Accept", "application/json")
+            .send()
+            .await?;
 
-        let used_percent = if limit > 0.0 { (used / limit) * 100.0 } else { 0.0 };
-
-        let email = json.get("email")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        let plan = json.get("plan")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        let mut usage = UsageSnapshot::new(RateWindow::new(used_percent));
-
-        if let Some(email) = email {
-            usage = usage.with_email(email);
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(ProviderError::AuthRequired);
         }
-        if let Some(plan) = plan {
-            usage = usage.with_login_method(&plan);
+
+        if !resp.status().is_success() {
+            return Err(ProviderError::Other(format!(
+                "Factory usage API returned status {}",
+                resp.status()
+            )));
+        }
+
+        resp.json().await
+            .map_err(|e| ProviderError::Parse(e.to_string()))
+    }
+
+    /// Fetch usage via web cookies
+    async fn fetch_via_web(&self) -> Result<UsageSnapshot, ProviderError> {
+        let cookies = self.get_cookies()?;
+
+        // Fetch auth info and usage in parallel conceptually, but sequentially here
+        let auth_info = self.fetch_auth_info(&cookies).await.ok();
+        let usage_data = self.fetch_usage_api(&cookies).await?;
+
+        // Calculate standard tokens usage
+        let standard_percent = if let Some(ref standard) = usage_data.standard {
+            let used = standard.used.unwrap_or(0.0);
+            let allowance = standard.allowance.unwrap_or(1.0);
+            if allowance > 0.0 {
+                (used / allowance) * 100.0
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+
+        // Calculate premium tokens usage
+        let premium_percent = if let Some(ref premium) = usage_data.premium {
+            let used = premium.used.unwrap_or(0.0);
+            let allowance = premium.allowance.unwrap_or(1.0);
+            if allowance > 0.0 {
+                (used / allowance) * 100.0
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+
+        let mut usage = UsageSnapshot::new(RateWindow::new(standard_percent));
+
+        // Add premium as secondary
+        if usage_data.premium.is_some() {
+            usage = usage.with_secondary(RateWindow::new(premium_percent));
+        }
+
+        // Add auth info
+        if let Some(auth) = auth_info {
+            if let Some(user) = auth.user {
+                if let Some(email) = user.email {
+                    usage = usage.with_email(email);
+                }
+            }
+            if let Some(org) = auth.organization {
+                // Build login method from tier and plan
+                let tier = org.tier.unwrap_or_else(|| "Droid".to_string());
+                let plan = org.plan_name.unwrap_or_default();
+                let login_method = if plan.is_empty() {
+                    tier
+                } else {
+                    format!("{} ({})", tier, plan)
+                };
+                usage = usage.with_login_method(login_method);
+
+                if let Some(org_name) = org.name {
+                    usage = usage.with_organization(org_name);
+                }
+            }
+        } else {
+            usage = usage.with_login_method("Droid");
         }
 
         Ok(usage)
@@ -207,36 +246,22 @@ impl Provider for FactoryProvider {
     }
 
     async fn fetch_usage(&self, ctx: &FetchContext) -> Result<ProviderFetchResult, ProviderError> {
-        tracing::debug!("Fetching Windsurf usage");
+        tracing::debug!("Fetching Droid (Factory) usage");
 
         match ctx.source_mode {
-            SourceMode::Auto => {
-                // Try local config first, then web API, then CLI
-                if let Ok(usage) = self.read_local_config().await {
-                    return Ok(ProviderFetchResult::new(usage, "local"));
-                }
-                if let Ok(usage) = self.fetch_via_web().await {
-                    return Ok(ProviderFetchResult::new(usage, "web"));
-                }
-                let usage = self.probe_cli().await?;
-                Ok(ProviderFetchResult::new(usage, "cli"))
-            }
-            SourceMode::Web => {
+            SourceMode::Auto | SourceMode::Web => {
                 let usage = self.fetch_via_web().await?;
                 Ok(ProviderFetchResult::new(usage, "web"))
             }
-            SourceMode::Cli => {
-                let usage = self.probe_cli().await?;
-                Ok(ProviderFetchResult::new(usage, "cli"))
-            }
-            SourceMode::OAuth => {
-                Err(ProviderError::UnsupportedSource(SourceMode::OAuth))
+            SourceMode::Cli | SourceMode::OAuth => {
+                // Droid doesn't have CLI or OAuth support
+                Err(ProviderError::UnsupportedSource(ctx.source_mode))
             }
         }
     }
 
     fn available_sources(&self) -> Vec<SourceMode> {
-        vec![SourceMode::Auto, SourceMode::Web, SourceMode::Cli]
+        vec![SourceMode::Auto, SourceMode::Web]
     }
 
     fn supports_web(&self) -> bool {
@@ -244,6 +269,6 @@ impl Provider for FactoryProvider {
     }
 
     fn supports_cli(&self) -> bool {
-        true
+        false
     }
 }

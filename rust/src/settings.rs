@@ -499,12 +499,12 @@ pub fn get_api_key_providers() -> Vec<ProviderConfigInfo> {
         },
         ProviderConfigInfo {
             id: ProviderId::Zai,
-            name: "Zai",
+            name: "z.ai",
             requires_api_key: true,
-            api_key_env_var: Some("ZED_API_KEY"),
-            api_key_help: Some("Get your API key from Zed → Settings → API"),
+            api_key_env_var: Some("ZAI_API_TOKEN"),
+            api_key_help: Some("Get your API token from z.ai Dashboard → Settings"),
             config_file_path: None,
-            dashboard_url: Some("https://zed.dev/account"),
+            dashboard_url: Some("https://z.ai/dashboard"),
         },
     ]
 }

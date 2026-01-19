@@ -88,8 +88,8 @@ pub fn get_status_page_url(provider: &str) -> Option<&'static str> {
         "gemini" | "google" => Some("https://status.cloud.google.com"),
         "copilot" | "github" => Some("https://www.githubstatus.com"),
         "cursor" => Some("https://status.cursor.com"),
-        "factory" | "windsurf" | "codeium" => Some("https://status.codeium.com"),
-        "zed" | "zai" => Some("https://status.zed.dev"),
+        "factory" | "droid" => None, // Factory.ai doesn't have a public status page
+        "zai" | "z.ai" => None, // z.ai doesn't have a public status page
         _ => None,
     }
 }

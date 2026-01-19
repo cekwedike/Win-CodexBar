@@ -1167,8 +1167,8 @@ impl eframe::App for CodexBarApp {
                             // Get web login URL for providers without CLI login
                             let web_login_url = match p.name.as_str() {
                                 "cursor" => Some("https://cursor.com/settings"),
-                                "windsurf" | "factory" => Some("https://codeium.com/account"),
-                                "zed" | "zai" => Some("https://zed.dev/account"),
+                                "droid" | "factory" => Some("https://app.factory.ai"),
+                                "zai" | "z.ai" => Some("https://z.ai/dashboard"),
                                 "kiro" => Some("https://kiro.dev"),
                                 "vertexai" | "vertex ai" => Some("https://console.cloud.google.com/vertex-ai"),
                                 "augment" => Some("https://app.augmentcode.com"),

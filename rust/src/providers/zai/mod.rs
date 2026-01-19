@@ -1,7 +1,7 @@
-//! Zai (z.ai) provider implementation
+//! z.ai provider implementation
 //!
-//! Fetches usage data from Zai's AI service
-//! Zai stores credentials and usage info locally
+//! Fetches usage data from z.ai's quota API
+//! Uses API token stored in Windows Credential Manager
 
 pub mod mcp_details;
 
@@ -10,14 +10,42 @@ pub mod mcp_details;
 pub use mcp_details::{McpDetailsMenu, ZaiLimitEntry, ZaiLimitType, ZaiLimitUnit, ZaiUsageDetail, ZaiUsageSnapshot};
 
 use async_trait::async_trait;
-use std::path::PathBuf;
+use serde::Deserialize;
 
 use crate::core::{
     FetchContext, Provider, ProviderId, ProviderError, ProviderFetchResult,
     ProviderMetadata, RateWindow, SourceMode, UsageSnapshot,
 };
 
-/// Zai provider
+/// z.ai API endpoint for quota/usage
+const ZAI_API_URL: &str = "https://api.z.ai/api/monitor/usage/quota/limit";
+
+/// Windows Credential Manager target for z.ai API token
+const ZAI_CREDENTIAL_TARGET: &str = "codexbar-zai";
+
+/// z.ai quota response structure
+#[derive(Debug, Deserialize)]
+struct ZaiQuotaResponse {
+    /// List of quota limits
+    #[serde(default)]
+    limits: Vec<ZaiLimit>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ZaiLimit {
+    /// Limit type (e.g., "tokens", "mcp")
+    #[serde(rename = "type")]
+    limit_type: Option<String>,
+    /// Used amount
+    used: Option<f64>,
+    /// Total limit
+    limit: Option<f64>,
+    /// Reset time (ISO 8601)
+    #[serde(rename = "resetAt")]
+    reset_at: Option<String>,
+}
+
+/// z.ai provider
 pub struct ZaiProvider {
     metadata: ProviderMetadata,
 }
@@ -27,77 +55,48 @@ impl ZaiProvider {
         Self {
             metadata: ProviderMetadata {
                 id: ProviderId::Zai,
-                display_name: "Zai",
-                session_label: "Session",
-                weekly_label: "Monthly",
+                display_name: "z.ai",
+                session_label: "Tokens",
+                weekly_label: "MCP",
                 supports_opus: false,
                 supports_credits: true,
                 default_enabled: false,
                 is_primary: false,
-                dashboard_url: Some("https://zed.dev/account"),
-                status_page_url: Some("https://status.zed.dev"),
+                dashboard_url: Some("https://z.ai/dashboard"),
+                status_page_url: None,
             },
         }
     }
 
-    /// Get Zai config directory (uses Zed's config location)
-    fn get_zed_config_path() -> Option<PathBuf> {
-        #[cfg(target_os = "windows")]
-        {
-            dirs::config_dir().map(|p| p.join("Zed"))
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            dirs::config_dir().map(|p| p.join("zed"))
-        }
-    }
-
-    /// Find the Zai CLI binary
-    fn which_zed() -> Option<PathBuf> {
-        let possible_paths = [
-            which::which("zed").ok(),
-            #[cfg(target_os = "windows")]
-            dirs::data_local_dir().map(|p| p.join("Programs").join("Zed").join("zed.exe")),
-            #[cfg(target_os = "windows")]
-            Some(PathBuf::from("C:\\Program Files\\Zed\\zed.exe")),
-            #[cfg(not(target_os = "windows"))]
-            None,
-        ];
-
-        possible_paths.into_iter().flatten().find(|p| p.exists())
-    }
-
-    /// Read credentials from Zai config
-    async fn read_credentials(&self) -> Result<String, ProviderError> {
-        let config_path = Self::get_zed_config_path()
-            .ok_or_else(|| ProviderError::NotInstalled("Zai config directory not found".to_string()))?;
-
-        // Zed stores credentials in db/
-        let creds_file = config_path.join("db").join("zed_credentials");
-        if creds_file.exists() {
-            let content = tokio::fs::read_to_string(&creds_file).await
-                .map_err(|e| ProviderError::Other(e.to_string()))?;
-            return Ok(content.trim().to_string());
-        }
-
-        // Also check settings.json for access_token
-        let settings_file = config_path.join("settings.json");
-        if settings_file.exists() {
-            let content = tokio::fs::read_to_string(&settings_file).await
-                .map_err(|e| ProviderError::Other(e.to_string()))?;
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(token) = json.get("access_token").and_then(|v| v.as_str()) {
-                    return Ok(token.to_string());
+    /// Get API token from Windows Credential Manager
+    fn get_api_token() -> Result<String, ProviderError> {
+        // Try Windows Credential Manager
+        match keyring::Entry::new(ZAI_CREDENTIAL_TARGET, "api_token") {
+            Ok(entry) => match entry.get_password() {
+                Ok(token) => Ok(token),
+                Err(_) => {
+                    // Try environment variable as fallback
+                    std::env::var("ZAI_API_TOKEN").map_err(|_| {
+                        ProviderError::NotInstalled(
+                            "z.ai API token not found. Set in Preferences → Providers or ZAI_API_TOKEN environment variable.".to_string()
+                        )
+                    })
                 }
+            },
+            Err(_) => {
+                // Try environment variable as fallback
+                std::env::var("ZAI_API_TOKEN").map_err(|_| {
+                    ProviderError::NotInstalled(
+                        "z.ai API token not found. Set in Preferences → Providers or ZAI_API_TOKEN environment variable.".to_string()
+                    )
+                })
             }
         }
-
-        Err(ProviderError::AuthRequired)
     }
 
-    /// Fetch usage via Zai API
-    async fn fetch_via_web(&self) -> Result<UsageSnapshot, ProviderError> {
-        let token = self.read_credentials().await?;
+    /// Fetch usage from z.ai API
+    async fn fetch_usage_api(&self) -> Result<UsageSnapshot, ProviderError> {
+        let api_token = Self::get_api_token()?;
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
@@ -105,70 +104,73 @@ impl ZaiProvider {
             .map_err(|e| ProviderError::Other(e.to_string()))?;
 
         let resp = client
-            .get("https://api.zed.dev/user/usage")
-            .header("Authorization", format!("Bearer {}", token))
+            .get(ZAI_API_URL)
+            .header("Authorization", format!("Bearer {}", api_token))
+            .header("Accept", "application/json")
             .send()
             .await?;
 
-        if !resp.status().is_success() {
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
             return Err(ProviderError::AuthRequired);
         }
 
-        let json: serde_json::Value = resp.json().await
+        if !resp.status().is_success() {
+            return Err(ProviderError::Other(format!(
+                "z.ai API returned status {}",
+                resp.status()
+            )));
+        }
+
+        let quota: ZaiQuotaResponse = resp.json().await
             .map_err(|e| ProviderError::Parse(e.to_string()))?;
 
-        self.parse_usage_response(&json)
+        self.parse_quota_response(&quota)
     }
 
-    fn parse_usage_response(&self, json: &serde_json::Value) -> Result<UsageSnapshot, ProviderError> {
-        let used_credits = json.get("used_credits")
-            .or_else(|| json.get("usage"))
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
+    fn parse_quota_response(&self, quota: &ZaiQuotaResponse) -> Result<UsageSnapshot, ProviderError> {
+        // Find tokens limit (primary/session)
+        let tokens_limit = quota.limits.iter()
+            .find(|l| l.limit_type.as_deref() == Some("tokens"));
 
-        let credit_limit = json.get("credit_limit")
-            .or_else(|| json.get("limit"))
-            .and_then(|v| v.as_f64())
-            .unwrap_or(100.0);
+        // Find MCP limit (weekly/secondary)
+        let mcp_limit = quota.limits.iter()
+            .find(|l| l.limit_type.as_deref() == Some("mcp"));
 
-        let used_percent = if credit_limit > 0.0 {
-            (used_credits / credit_limit) * 100.0
+        // Calculate session (tokens) usage percentage
+        let session_percent = if let Some(tokens) = tokens_limit {
+            let used = tokens.used.unwrap_or(0.0);
+            let limit = tokens.limit.unwrap_or(1.0);
+            if limit > 0.0 {
+                (used / limit) * 100.0
+            } else {
+                0.0
+            }
         } else {
             0.0
         };
 
-        let email = json.get("email")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+        // Calculate MCP usage percentage
+        let mcp_percent = if let Some(mcp) = mcp_limit {
+            let used = mcp.used.unwrap_or(0.0);
+            let limit = mcp.limit.unwrap_or(1.0);
+            if limit > 0.0 {
+                (used / limit) * 100.0
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
 
-        let plan = json.get("plan")
-            .or_else(|| json.get("subscription"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("Zai");
+        let mut usage = UsageSnapshot::new(RateWindow::new(session_percent))
+            .with_login_method("z.ai");
 
-        let mut usage = UsageSnapshot::new(RateWindow::new(used_percent))
-            .with_login_method(plan);
-
-        if let Some(email) = email {
-            usage = usage.with_email(email);
+        // Add secondary (MCP) usage if available
+        if mcp_limit.is_some() {
+            usage = usage.with_secondary(RateWindow::new(mcp_percent));
         }
 
         Ok(usage)
-    }
-
-    /// Probe CLI for basic detection
-    async fn probe_cli(&self) -> Result<UsageSnapshot, ProviderError> {
-        let zed_path = Self::which_zed().ok_or_else(|| {
-            ProviderError::NotInstalled("Zai not found. Install from https://zed.dev".to_string())
-        })?;
-
-        if zed_path.exists() {
-            let usage = UsageSnapshot::new(RateWindow::new(0.0))
-                .with_login_method("Zai (installed)");
-            Ok(usage)
-        } else {
-            Err(ProviderError::NotInstalled("Zai not found".to_string()))
-        }
     }
 }
 
@@ -189,39 +191,30 @@ impl Provider for ZaiProvider {
     }
 
     async fn fetch_usage(&self, ctx: &FetchContext) -> Result<ProviderFetchResult, ProviderError> {
-        tracing::debug!("Fetching Zai usage");
+        tracing::debug!("Fetching z.ai usage");
 
+        // z.ai only supports OAuth/API token - no CLI or web cookie fallback
         match ctx.source_mode {
-            SourceMode::Auto => {
-                if let Ok(usage) = self.fetch_via_web().await {
-                    return Ok(ProviderFetchResult::new(usage, "web"));
-                }
-                let usage = self.probe_cli().await?;
-                Ok(ProviderFetchResult::new(usage, "cli"))
+            SourceMode::Auto | SourceMode::OAuth => {
+                let usage = self.fetch_usage_api().await?;
+                Ok(ProviderFetchResult::new(usage, "oauth"))
             }
-            SourceMode::Web => {
-                let usage = self.fetch_via_web().await?;
-                Ok(ProviderFetchResult::new(usage, "web"))
-            }
-            SourceMode::Cli => {
-                let usage = self.probe_cli().await?;
-                Ok(ProviderFetchResult::new(usage, "cli"))
-            }
-            SourceMode::OAuth => {
-                Err(ProviderError::UnsupportedSource(SourceMode::OAuth))
+            SourceMode::Web | SourceMode::Cli => {
+                // z.ai doesn't support web cookies or CLI
+                Err(ProviderError::UnsupportedSource(ctx.source_mode))
             }
         }
     }
 
     fn available_sources(&self) -> Vec<SourceMode> {
-        vec![SourceMode::Auto, SourceMode::Web, SourceMode::Cli]
+        vec![SourceMode::Auto, SourceMode::OAuth]
     }
 
     fn supports_web(&self) -> bool {
-        true
+        false
     }
 
     fn supports_cli(&self) -> bool {
-        true
+        false
     }
 }

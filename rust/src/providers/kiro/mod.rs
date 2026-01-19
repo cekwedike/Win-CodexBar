@@ -3,6 +3,14 @@
 //! Fetches usage data from Kiro (Amazon's AI coding assistant)
 //! Uses kiro-cli for authentication and usage fetching
 
+pub mod version;
+
+// Re-exports for version compatibility checking
+#[allow(unused_imports)]
+pub use version::{
+    detect_version, find_kiro_cli, get_version, is_compatible, is_installed, KiroVersion,
+};
+
 use async_trait::async_trait;
 use chrono::Datelike;
 use std::path::PathBuf;

@@ -3,6 +3,12 @@
 //! Fetches usage data from OpenCode (opencode.ai)
 //! Uses browser cookies for authentication
 
+pub mod scraper;
+
+// Re-exports for advanced scraping
+#[allow(unused_imports)]
+pub use scraper::{OpenCodeError, OpenCodeUsageFetcher, OpenCodeUsageSnapshot};
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reqwest::Client;

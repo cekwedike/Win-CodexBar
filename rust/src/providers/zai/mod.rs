@@ -40,7 +40,7 @@ impl ZaiProvider {
         }
     }
 
-    /// Get Zed config directory
+    /// Get Zai config directory (uses Zed's config location)
     fn get_zed_config_path() -> Option<PathBuf> {
         #[cfg(target_os = "windows")]
         {
@@ -52,7 +52,7 @@ impl ZaiProvider {
         }
     }
 
-    /// Find the Zed CLI binary
+    /// Find the Zai CLI binary
     fn which_zed() -> Option<PathBuf> {
         let possible_paths = [
             which::which("zed").ok(),
@@ -67,10 +67,10 @@ impl ZaiProvider {
         possible_paths.into_iter().flatten().find(|p| p.exists())
     }
 
-    /// Read credentials from Zed config
+    /// Read credentials from Zai config
     async fn read_credentials(&self) -> Result<String, ProviderError> {
         let config_path = Self::get_zed_config_path()
-            .ok_or_else(|| ProviderError::NotInstalled("Zed config directory not found".to_string()))?;
+            .ok_or_else(|| ProviderError::NotInstalled("Zai config directory not found".to_string()))?;
 
         // Zed stores credentials in db/
         let creds_file = config_path.join("db").join("zed_credentials");
@@ -95,7 +95,7 @@ impl ZaiProvider {
         Err(ProviderError::AuthRequired)
     }
 
-    /// Fetch usage via Zed API
+    /// Fetch usage via Zai API
     async fn fetch_via_web(&self) -> Result<UsageSnapshot, ProviderError> {
         let token = self.read_credentials().await?;
 
@@ -159,15 +159,15 @@ impl ZaiProvider {
     /// Probe CLI for basic detection
     async fn probe_cli(&self) -> Result<UsageSnapshot, ProviderError> {
         let zed_path = Self::which_zed().ok_or_else(|| {
-            ProviderError::NotInstalled("Zed not found. Install from https://zed.dev".to_string())
+            ProviderError::NotInstalled("Zai not found. Install from https://zed.dev".to_string())
         })?;
 
         if zed_path.exists() {
             let usage = UsageSnapshot::new(RateWindow::new(0.0))
-                .with_login_method("Zed (installed)");
+                .with_login_method("Zai (installed)");
             Ok(usage)
         } else {
-            Err(ProviderError::NotInstalled("Zed not found".to_string()))
+            Err(ProviderError::NotInstalled("Zai not found".to_string()))
         }
     }
 }

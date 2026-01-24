@@ -1,5 +1,31 @@
 # Changelog
 
+## [Windows] 1.0.2 — 2026-01-24
+
+### UI Redesign
+- Redesign main UI with 4-column grid layout for provider tabs
+- Replace amber progress bars with blue color scheme
+- Add section headers with chevron indicators
+- Increase font sizes across all tiers for better readability
+- Disable window state persistence to prevent size corruption
+
+### Settings Page
+- Complete redesign with "precision calm" aesthetic
+- Underline-style tab navigation
+- Settings cards with grouped settings and dividers
+- Left accent bars on API key cards for status indication
+- Reusable helper components for consistent styling
+
+### New Provider
+- Add JetBrains AI provider support with usage tracking
+- Support aliases: jetbrains, jetbrains-ai, intellij
+- Add JetBrains icon and brand color to theme
+
+### Housekeeping
+- Remove development screenshots from repository
+
+---
+
 ## 0.18.0 — Unreleased
 ### Providers
 - OpenCode: add web usage provider with workspace override + Chrome-first cookie import (#188). Thanks @anthnykr!

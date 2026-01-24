@@ -306,6 +306,7 @@ pub fn account_name_for_provider(provider: ProviderId) -> &'static str {
         ProviderId::KimiK2 => "kimik2-cookie",
         ProviderId::Amp => "amp-cookie",
         ProviderId::Synthetic => "synthetic-cookie",
+        ProviderId::JetBrains => "jetbrains-token",
     }
 }
 

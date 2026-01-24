@@ -102,6 +102,7 @@ impl WeeklyIndicatorColors {
             ProviderId::KimiK2 => (255, 87, 34, 255),    // Deep orange
             ProviderId::Amp => (233, 30, 99, 255),       // Pink
             ProviderId::Synthetic => (158, 158, 158, 255), // Gray
+            ProviderId::JetBrains => (255, 128, 0, 255),  // JetBrains orange
         }
     }
 

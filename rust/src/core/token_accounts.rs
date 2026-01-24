@@ -111,7 +111,8 @@ impl TokenAccountSupport {
             | ProviderId::Kimi
             | ProviderId::KimiK2
             | ProviderId::Amp
-            | ProviderId::Synthetic => None,
+            | ProviderId::Synthetic
+            | ProviderId::JetBrains => None,
         }
     }
 

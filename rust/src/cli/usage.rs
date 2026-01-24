@@ -6,7 +6,7 @@ use serde::Serialize;
 use crate::core::{FetchContext, ProviderId, Provider, ProviderFetchResult, SourceMode};
 use crate::providers::{
     AmpProvider, AntigravityProvider, AugmentProvider, ClaudeProvider, CodexProvider,
-    CopilotProvider, CursorProvider, FactoryProvider, GeminiProvider,
+    CopilotProvider, CursorProvider, FactoryProvider, GeminiProvider, JetBrainsProvider,
     KimiProvider, KimiK2Provider, KiroProvider, MiniMaxProvider, OpenCodeProvider,
     SyntheticProvider, VertexAIProvider, ZaiProvider,
 };
@@ -152,6 +152,7 @@ fn create_provider(id: ProviderId) -> Box<dyn Provider> {
         ProviderId::KimiK2 => Box::new(KimiK2Provider::new()),
         ProviderId::Amp => Box::new(AmpProvider::new()),
         ProviderId::Synthetic => Box::new(SyntheticProvider::new()),
+        ProviderId::JetBrains => Box::new(JetBrainsProvider::new()),
     }
 }
 

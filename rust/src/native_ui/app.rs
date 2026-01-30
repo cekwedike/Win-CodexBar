@@ -473,6 +473,23 @@ impl CodexBarApp {
             });
         });
     }
+
+    /// Get an animated value that smoothly transitions to the target over 300ms.
+    ///
+    /// This helper provides consistent animation behavior for progress bar fills
+    /// and other numeric value transitions.
+    ///
+    /// # Arguments
+    /// * `ctx` - The egui context for animation state
+    /// * `id` - A unique identifier for tracking this animation
+    /// * `target` - The target value to animate towards
+    ///
+    /// # Returns
+    /// The current animated value, which will smoothly approach the target
+    #[allow(dead_code)]
+    fn get_animated_value(ctx: &egui::Context, id: egui::Id, target: f32) -> f32 {
+        ctx.animate_value_with_time(id, target, 0.3)
+    }
 }
 
 fn create_provider(id: ProviderId) -> Box<dyn Provider> {
@@ -861,7 +878,8 @@ impl eframe::App for CodexBarApp {
                                     if let Some(pct) = provider.session_percent {
                                         draw_section_header(ui, "Session");
                                         ui.add_space(Spacing::XS);
-                                        draw_usage_bar(ui, pct, provider.session_reset.as_deref(), Theme::BLUE);
+                                        let bar_id = Some(ui.id().with(&provider.name).with("session"));
+                                        draw_usage_bar(ui, pct, provider.session_reset.as_deref(), Theme::BLUE, bar_id);
                                         ui.add_space(Spacing::MD);
                                     }
 
@@ -869,7 +887,8 @@ impl eframe::App for CodexBarApp {
                                     if let Some(pct) = provider.weekly_percent {
                                         draw_section_header(ui, "Weekly");
                                         ui.add_space(Spacing::XS);
-                                        draw_usage_bar(ui, pct, provider.weekly_reset.as_deref(), Theme::BLUE);
+                                        let bar_id = Some(ui.id().with(&provider.name).with("weekly"));
+                                        draw_usage_bar(ui, pct, provider.weekly_reset.as_deref(), Theme::BLUE, bar_id);
                                         ui.add_space(Spacing::MD);
                                     }
 
@@ -894,7 +913,8 @@ impl eframe::App for CodexBarApp {
                                                 ui.painter().circle_filled(rect.center(), 3.0, dot_color);
                                             }
 
-                                            draw_usage_bar_content(ui, pct, Theme::BLUE);
+                                            let bar_id = Some(ui.id().with(&provider.name).with("model"));
+                                            draw_usage_bar_content(ui, pct, Theme::BLUE, bar_id);
                                         });
 
                                         // Pace text
@@ -1156,7 +1176,14 @@ fn draw_section_header(ui: &mut egui::Ui, title: &str) {
 }
 
 /// Draw a usage bar with label, percentage, and capsule progress - macOS style
-fn draw_usage_bar(ui: &mut egui::Ui, percent: f64, reset: Option<&str>, bar_color: Color32) {
+///
+/// # Arguments
+/// * `ui` - The egui UI context
+/// * `percent` - The target percentage value (0-100)
+/// * `reset` - Optional reset time string to display
+/// * `bar_color` - The fill color for the progress bar
+/// * `bar_id` - A unique identifier for animation state tracking
+fn draw_usage_bar(ui: &mut egui::Ui, percent: f64, reset: Option<&str>, bar_color: Color32, bar_id: Option<egui::Id>) {
     // Label row with reset time on right
     ui.horizontal(|ui| {
         let pct_str = format!("{}% used", percent as i32);
@@ -1171,24 +1198,88 @@ fn draw_usage_bar(ui: &mut egui::Ui, percent: f64, reset: Option<&str>, bar_colo
 
     ui.add_space(4.0);
 
-    draw_usage_bar_content(ui, percent, bar_color);
+    draw_usage_bar_content(ui, percent, bar_color, bar_id);
 }
 
-/// Draw just the progress bar part
-fn draw_usage_bar_content(ui: &mut egui::Ui, percent: f64, color: Color32) {
+/// Draw a pulsing glow effect behind high-usage bars (>= 80%)
+fn draw_usage_bar_glow(ui: &mut egui::Ui, rect: Rect, percent: f64) {
+    if percent < 80.0 {
+        return;
+    }
+
+    // Calculate pulse intensity based on usage level:
+    // 80-89%: subtle (0.3), 90-94%: medium (0.6), 95%+: strong (1.0)
+    let base_intensity = if percent >= 95.0 {
+        1.0
+    } else if percent >= 90.0 {
+        0.6
+    } else {
+        0.3
+    };
+
+    // Sine-wave pulse animation
+    let time = ui.input(|i| i.time) as f32;
+    let pulse_phase = (time * std::f32::consts::PI).sin() * 0.5 + 0.5;
+
+    // Combine base intensity with pulse (range 0.5 to 1.0 of base)
+    let intensity = base_intensity * (0.5 + 0.5 * pulse_phase);
+
+    // Get glow color from theme
+    let glow_color = Theme::usage_glow_color(percent);
+
+    // Apply intensity to alpha
+    let alpha = (glow_color.a() as f32 * intensity) as u8;
+    let final_glow = egui::Color32::from_rgba_unmultiplied(
+        glow_color.r(),
+        glow_color.g(),
+        glow_color.b(),
+        alpha,
+    );
+
+    // Draw expanded glow rectangle behind the bar
+    let glow_expand = 3.0;
+    let glow_rect = rect.expand(glow_expand);
+    ui.painter().rect_filled(glow_rect, Rounding::same(Radius::PILL + glow_expand), final_glow);
+}
+
+/// Draw just the progress bar part with optional animation
+///
+/// # Arguments
+/// * `ui` - The egui UI context
+/// * `percent` - The target percentage value (0-100)
+/// * `color` - The fill color for the progress bar
+/// * `bar_id` - A unique identifier for animation state tracking. When provided,
+///              the bar will smoothly animate to the target value over 300ms.
+fn draw_usage_bar_content(ui: &mut egui::Ui, percent: f64, color: Color32, bar_id: Option<egui::Id>) {
     // Progress bar - macOS style
     let bar_height = 6.0;
     let available_width = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(Vec2::new(available_width, bar_height), egui::Sense::hover());
 
+    // Calculate animated or static fill percentage
+    let animated_percent = if let Some(id) = bar_id {
+        // Animate to target value over 300ms
+        ui.ctx().animate_value_with_time(id, percent as f32, 0.3) as f64
+    } else {
+        percent
+    };
+
+    // Draw pulsing glow for high-usage bars (>= 80%) - use animated value for smooth glow transition
+    draw_usage_bar_glow(ui, rect, animated_percent);
+
     // Track
     ui.painter().rect_filled(rect, Rounding::same(Radius::PILL), Theme::PROGRESS_TRACK);
 
-    // Fill
-    let fill_w = rect.width() * (percent as f32 / 100.0);
+    // Fill - use animated percentage for smooth transitions
+    let fill_w = rect.width() * (animated_percent as f32 / 100.0);
     if fill_w > 0.0 {
         let fill_rect = Rect::from_min_size(rect.min, Vec2::new(fill_w, bar_height));
         ui.painter().rect_filled(fill_rect, Rounding::same(Radius::PILL), color);
+    }
+
+    // Request continuous repaint when pulsing bars are visible or animation is in progress
+    if animated_percent >= 80.0 || (bar_id.is_some() && (animated_percent - percent).abs() > 0.1) {
+        ui.ctx().request_repaint();
     }
 }
 

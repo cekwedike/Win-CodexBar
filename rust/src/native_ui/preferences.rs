@@ -812,6 +812,18 @@ impl PreferencesWindow {
 
         ui.add_space(Spacing::LG);
 
+        section_header(ui, "Animations");
+
+        settings_card(ui, |ui| {
+            let mut enable_animations = self.settings.enable_animations;
+            if setting_toggle(ui, "Enable animations", "Animate charts and UI transitions", &mut enable_animations) {
+                self.settings.enable_animations = enable_animations;
+                self.settings_changed = true;
+            }
+        });
+
+        ui.add_space(Spacing::LG);
+
         section_header(ui, "Fun");
 
         settings_card(ui, |ui| {

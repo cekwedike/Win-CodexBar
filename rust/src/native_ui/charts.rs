@@ -52,6 +52,8 @@ pub struct CostHistoryChart {
     selected_index: Option<usize>,
     bar_color: Color32,
     total_cost: Option<f64>,
+    animation_start: Option<std::time::Instant>,
+    is_animated: bool,
 }
 
 impl CostHistoryChart {
@@ -67,7 +69,15 @@ impl CostHistoryChart {
             selected_index: None,
             bar_color,
             total_cost,
+            animation_start: None,
+            is_animated: false,
         }
+    }
+
+    /// Start the entrance animation
+    pub fn animate_entrance(&mut self) {
+        self.animation_start = Some(std::time::Instant::now());
+        self.is_animated = true;
     }
 
     /// Render the chart
@@ -99,12 +109,46 @@ impl CostHistoryChart {
 
         let rect = response.rect;
 
+        // Animation timing constants
+        const TOTAL_ANIMATION_MS: f32 = 600.0;
+        const STAGGER_PER_BAR_MS: f32 = 20.0;
+
+        // Check if animation is still in progress
+        let animation_needs_repaint = if self.is_animated {
+            if let Some(start) = self.animation_start {
+                let elapsed = start.elapsed().as_millis() as f32;
+                let total_duration = TOTAL_ANIMATION_MS + (self.points.len() as f32 * STAGGER_PER_BAR_MS);
+                elapsed < total_duration
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
         // Draw bars
         for (i, point) in self.points.iter().enumerate() {
-            let bar_height = if max_value > 0.0 {
+            let base_bar_height = if max_value > 0.0 {
                 (point.value / max_value) as f32 * (chart_height - 10.0)
             } else {
                 0.0
+            };
+
+            // Apply entrance animation with staggered timing
+            let bar_height = if self.is_animated {
+                if let Some(start) = self.animation_start {
+                    let elapsed = start.elapsed().as_millis() as f32;
+                    let bar_delay = i as f32 * STAGGER_PER_BAR_MS;
+                    let bar_elapsed = (elapsed - bar_delay).max(0.0);
+                    let progress = (bar_elapsed / TOTAL_ANIMATION_MS).min(1.0);
+                    // Ease-out curve: 1.0 - (1.0 - progress)^3
+                    let eased = 1.0 - (1.0 - progress).powi(3);
+                    base_bar_height * eased
+                } else {
+                    base_bar_height
+                }
+            } else {
+                base_bar_height
             };
 
             let x = rect.left() + (i as f32 * (bar_width + bar_spacing)) + bar_spacing / 2.0;
@@ -145,6 +189,11 @@ impl CostHistoryChart {
             };
 
             painter.rect_filled(bar_rect, Rounding::same(2.0), color);
+        }
+
+        // Request repaint if animation is in progress
+        if animation_needs_repaint {
+            ui.ctx().request_repaint();
         }
 
         // Hover selection highlight

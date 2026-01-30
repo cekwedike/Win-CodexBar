@@ -47,6 +47,9 @@ pub struct Settings {
 
     /// Enable random "surprise" animations (blinks, wiggles)
     pub surprise_animations: bool,
+
+    /// Enable UI animations (chart entrances, transitions)
+    pub enable_animations: bool,
 }
 
 impl Default for Settings {
@@ -67,6 +70,7 @@ impl Default for Settings {
             merge_tray_icons: false, // Show single provider by default
             show_as_used: true,      // Show as "used" by default
             surprise_animations: false, // Off by default
+            enable_animations: true, // Animations enabled by default
         }
     }
 }

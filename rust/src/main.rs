@@ -85,7 +85,6 @@ fn run() -> i32 {
                 }
             };
 
-            // Launch the native egui menu bar GUI
             match native_ui::run() {
                 Ok(()) => exit_codes::SUCCESS,
                 Err(_) => exit_codes::UNEXPECTED_FAILURE,

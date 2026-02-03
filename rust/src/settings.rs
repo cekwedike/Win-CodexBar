@@ -50,6 +50,15 @@ pub struct Settings {
 
     /// Enable UI animations (chart entrances, transitions)
     pub enable_animations: bool,
+
+    /// Show reset times as relative (e.g., "2h 30m" instead of "3:00 PM")
+    pub reset_time_relative: bool,
+
+    /// Menu bar display mode: "minimal", "compact", or "detailed"
+    pub menu_bar_display_mode: String,
+
+    /// Show credits and extra usage information in the UI
+    pub show_credits_extra_usage: bool,
 }
 
 impl Default for Settings {
@@ -71,6 +80,9 @@ impl Default for Settings {
             show_as_used: true,      // Show as "used" by default
             surprise_animations: false, // Off by default
             enable_animations: true, // Animations enabled by default
+            reset_time_relative: true, // Show relative times by default
+            menu_bar_display_mode: "detailed".to_string(), // Detailed mode by default
+            show_credits_extra_usage: true, // Show credits + extra usage by default
         }
     }
 }

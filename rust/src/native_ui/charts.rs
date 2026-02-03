@@ -97,7 +97,7 @@ impl CostHistoryChart {
             .map(|(i, _)| i);
 
         // Chart area
-        let chart_height = 100.0;
+        let chart_height = 30.0;
         let available_width = ui.available_width();
         let bar_width = (available_width / self.points.len() as f32) * 0.8;
         let bar_spacing = (available_width / self.points.len() as f32) * 0.2;
@@ -213,9 +213,7 @@ impl CostHistoryChart {
             self.selected_index = None;
         }
 
-        ui.add_space(8.0);
-
-        // Detail text
+        // Compact: Only show detail on hover, no default text
         if let Some(idx) = self.selected_index {
             if let Some(point) = self.points.get(idx) {
                 let date_display = format_date_display(&point.date);
@@ -229,39 +227,12 @@ impl CostHistoryChart {
 
                 ui.label(
                     RichText::new(detail)
-                        .size(11.0)
+                        .size(10.0)
                         .color(Color32::GRAY),
                 );
-
-                // Model breakdown (Top models)
-                if let Some(ref breakdowns) = point.model_breakdowns {
-                    let top_models = format_top_models(breakdowns);
-                    if !top_models.is_empty() {
-                        ui.label(
-                            RichText::new(top_models)
-                                .size(10.0)
-                                .color(Color32::from_rgb(150, 150, 160)),
-                        );
-                    }
-                }
             }
-        } else {
-            ui.label(
-                RichText::new("Hover a bar for details")
-                    .size(11.0)
-                    .color(Color32::GRAY),
-            );
         }
-
-        // Total
-        if let Some(total) = self.total_cost {
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new(format!("Total (30d): ${:.2}", total))
-                    .size(11.0)
-                    .color(Color32::GRAY),
-            );
-        }
+        // Removed: "Hover a bar for details" and "Total (30d)" texts for compact layout
     }
 }
 
@@ -305,7 +276,7 @@ impl CreditsHistoryChart {
             .map(|(i, _)| i);
 
         // Chart area
-        let chart_height = 100.0;
+        let chart_height = 30.0;
         let available_width = ui.available_width();
         let bar_width = (available_width / self.points.len() as f32) * 0.8;
         let bar_spacing = (available_width / self.points.len() as f32) * 0.2;

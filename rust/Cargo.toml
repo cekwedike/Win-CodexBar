@@ -107,6 +107,9 @@ dirs = "6"
 # Open URLs in browser
 open = "5"
 
+# Clipboard access
+arboard = "3.2"
+
 # Windows Registry access
 winreg = "0.55"
 

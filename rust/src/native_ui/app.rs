@@ -5,15 +5,24 @@ use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, Rect, R
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use super::charts::{
+    ChartPoint, CostHistoryChart, CreditsHistoryChart, ServiceUsage, UsageBreakdownChart,
+    UsageBreakdownPoint,
+};
 use super::preferences::PreferencesWindow;
 use super::provider_icons::ProviderIconCache;
-use super::theme::{provider_color, FontSize, Radius, Spacing, Theme};
-use crate::core::{FetchContext, Provider, ProviderId, ProviderFetchResult, RateWindow};
+use super::theme::{provider_color, status_color, FontSize, Radius, Spacing, Theme};
+use crate::core::{
+    FetchContext, OpenAIDashboardCacheStore, PersonalInfoRedactor, Provider, ProviderId,
+    ProviderFetchResult, RateWindow,
+};
+use crate::core::{TokenAccountStore, TokenAccountSupport};
 use crate::cost_scanner::get_daily_cost_history;
 use crate::login::LoginPhase;
 use crate::providers::*;
 use crate::settings::{ApiKeys, ManualCookies, Settings};
-use crate::shortcuts::ShortcutManager;
+use crate::browser::cookies::get_cookie_header;
+use crate::shortcuts::{parse_shortcut, ShortcutManager};
 use crate::status::{fetch_provider_status, get_status_page_url, StatusLevel};
 use crate::tray::{LoadingPattern, ProviderUsage, SurpriseAnimation, TrayManager, TrayMenuAction};
 use crate::updater::{self, UpdateInfo};
@@ -40,6 +49,8 @@ pub struct ProviderData {
     pub status_level: StatusLevel,
     pub status_description: Option<String>,
     pub cost_history: Vec<(String, f64)>,
+    pub credits_history: Vec<(String, f64)>,
+    pub usage_breakdown: Vec<UsageBreakdownPoint>,
 }
 
 impl ProviderData {
@@ -85,6 +96,8 @@ impl ProviderData {
             status_level: StatusLevel::Unknown,
             status_description: None,
             cost_history: Vec::new(),
+            credits_history: Vec::new(),
+            usage_breakdown: Vec::new(),
         }
     }
 
@@ -110,6 +123,43 @@ impl ProviderData {
             status_level: StatusLevel::Unknown,
             status_description: None,
             cost_history: Vec::new(),
+            credits_history: Vec::new(),
+            usage_breakdown: Vec::new(),
+        }
+    }
+
+    /// Get the preferred metric percent based on the MetricPreference setting
+    pub fn get_preferred_metric(&self, pref: crate::settings::MetricPreference) -> f64 {
+        match pref {
+            crate::settings::MetricPreference::Session => {
+                self.session_percent.unwrap_or(0.0)
+            }
+            crate::settings::MetricPreference::Weekly => {
+                self.weekly_percent.unwrap_or_else(|| self.session_percent.unwrap_or(0.0))
+            }
+            crate::settings::MetricPreference::Model => {
+                self.model_percent.unwrap_or_else(|| self.session_percent.unwrap_or(0.0))
+            }
+            crate::settings::MetricPreference::Credits => {
+                // For credits, we show the credits_percent (remaining as percentage of full scale)
+                self.credits_percent.unwrap_or_else(|| self.session_percent.unwrap_or(0.0))
+            }
+            crate::settings::MetricPreference::Average => {
+                // Average of all available metrics
+                let mut sum = 0.0;
+                let mut count = 0;
+                if let Some(v) = self.session_percent { sum += v; count += 1; }
+                if let Some(v) = self.weekly_percent { sum += v; count += 1; }
+                if let Some(v) = self.model_percent { sum += v; count += 1; }
+                if count > 0 { sum / count as f64 } else { 0.0 }
+            }
+            crate::settings::MetricPreference::Automatic => {
+                // Automatic: prefer the highest available metric (most concerning)
+                let session = self.session_percent.unwrap_or(0.0);
+                let weekly = self.weekly_percent.unwrap_or(0.0);
+                let model = self.model_percent.unwrap_or(0.0);
+                session.max(weekly).max(model)
+            }
         }
     }
 }
@@ -170,6 +220,61 @@ fn calculate_pace(rate_window: &RateWindow) -> (Option<f64>, bool) {
     let lasts_to_reset = actual_percent <= expected_percent;
 
     (Some(pace), lasts_to_reset)
+}
+
+fn usage_display_percent(used_percent: f64, show_as_used: bool) -> f64 {
+    let used_percent = used_percent.clamp(0.0, 100.0);
+    if show_as_used {
+        used_percent
+    } else {
+        100.0 - used_percent
+    }
+}
+
+fn usage_display_label(display_percent: f64, show_as_used: bool) -> String {
+    if show_as_used {
+        format!("{:.0}% used", display_percent)
+    } else {
+        format!("{:.0}% remaining", display_percent)
+    }
+}
+
+fn load_usage_breakdown_points(provider_id: ProviderId, account_email: Option<&str>) -> Vec<UsageBreakdownPoint> {
+    if provider_id != ProviderId::Codex {
+        return Vec::new();
+    }
+
+    // Require account_email to validate cache belongs to current account
+    // Without it, we risk showing stale data from a different account
+    let Some(account_email) = account_email else {
+        return Vec::new();
+    };
+
+    let Some(cache) = OpenAIDashboardCacheStore::load() else {
+        return Vec::new();
+    };
+
+    // Verify cache belongs to current account
+    if !cache.account_email.eq_ignore_ascii_case(account_email) {
+        return Vec::new();
+    }
+
+    cache
+        .snapshot
+        .usage_breakdown
+        .iter()
+        .map(|point| {
+            let services = point
+                .services
+                .iter()
+                .map(|service| ServiceUsage {
+                    service: service.service.clone(),
+                    credits_used: service.credits_used,
+                })
+                .collect();
+            UsageBreakdownPoint::new(point.day.clone(), services)
+        })
+        .collect()
 }
 
 fn random_surprise_delay() -> Duration {
@@ -249,6 +354,8 @@ impl CodexBarApp {
                 status_level: StatusLevel::Unknown,
                 status_description: None,
                 cost_history: Vec::new(),
+                credits_history: Vec::new(),
+                usage_breakdown: Vec::new(),
             })
             .collect();
 
@@ -279,13 +386,14 @@ impl CodexBarApp {
             }
         };
 
-        // Check for updates in background
+        // Check for updates in background (using configured update channel)
         {
             let state = Arc::clone(&state);
+            let update_channel = settings.update_channel;
             std::thread::spawn(move || {
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 rt.block_on(async {
-                    if let Some(update) = updater::check_for_updates().await {
+                    if let Some(update) = updater::check_for_updates_with_channel(update_channel).await {
                         if let Ok(mut s) = state.lock() {
                             s.update_available = Some(update);
                             s.update_checked = true;
@@ -297,10 +405,19 @@ impl CodexBarApp {
             });
         }
 
-        // Initialize keyboard shortcuts
+        // Initialize keyboard shortcuts with custom shortcut from settings
         let shortcut_manager = match ShortcutManager::new() {
-            Ok(sm) => {
-                tracing::info!("Keyboard shortcut registered: Ctrl+Shift+U");
+            Ok(mut sm) => {
+                // Apply custom shortcut from settings if configured
+                if let Some((modifiers, key)) = parse_shortcut(&settings.global_shortcut) {
+                    if let Err(e) = sm.set_open_menu_shortcut(modifiers, key) {
+                        tracing::warn!("Failed to set custom shortcut '{}': {}", settings.global_shortcut, e);
+                    } else {
+                        tracing::info!("Keyboard shortcut registered: {}", settings.global_shortcut);
+                    }
+                } else {
+                    tracing::info!("Keyboard shortcut registered: Ctrl+Shift+U (default)");
+                }
                 Some(sm)
             }
             Err(e) => {
@@ -326,6 +443,8 @@ impl CodexBarApp {
         let manual_cookies = ManualCookies::load();
         let api_keys = ApiKeys::load();
         let reset_time_relative = self.settings.reset_time_relative;
+        // Load token accounts for account switching support
+        let token_accounts = TokenAccountStore::new().load().unwrap_or_default();
 
         std::thread::spawn(move || {
             if let Ok(mut s) = state.lock() {
@@ -336,14 +455,66 @@ impl CodexBarApp {
 
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
+                // Clear any stale OAuth env vars at the start of refresh
+                // This ensures account switches take effect immediately
+                const OAUTH_ENV_KEYS: &[&str] = &[
+                    "CODEXBAR_CLAUDE_OAUTH_TOKEN",
+                    "ZED_API_TOKEN",
+                    "ZAI_API_TOKEN",
+                ];
+                for key in OAUTH_ENV_KEYS {
+                    std::env::remove_var(key);
+                }
+
                 let handles: Vec<_> = enabled_ids
                     .iter()
                     .enumerate()
                     .map(|(idx, &id)| {
-                        let manual_cookie = manual_cookies.get(id.cli_name()).map(|s| s.to_string());
-                        let api_key = api_keys.get(id.cli_name()).map(|s| s.to_string());
+                        // Check for active token account first
+                        let active_token = token_accounts.get(&id)
+                            .and_then(|data| data.active_account())
+                            .map(|account| account.token.clone());
+
+                        // Check for environment override from token account (e.g., for Zai/Claude OAuth)
+                        let env_override = active_token.as_ref()
+                            .and_then(|token| TokenAccountSupport::env_override(id, token));
+
+                        // Set env override if present - providers will read from env vars
+                        // Note: We don't clear env vars here to avoid race conditions with
+                        // concurrent provider fetches. Instead, we pass api_key directly
+                        // through FetchContext for providers that support it.
+                        if let Some(ref env_vars) = env_override {
+                            for (key, value) in env_vars {
+                                std::env::set_var(key, value);
+                            }
+                        }
+
+                        // Determine cookie header: active token account > manual cookie > browser extraction
+                        let cookie_header = if env_override.is_some() {
+                            None
+                        } else if let Some(ref token) = active_token {
+                            // Use active account's token, normalized for this provider
+                            Some(TokenAccountSupport::normalized_cookie_header(id, token))
+                        } else {
+                            // Fallback to manual cookie or browser extraction
+                            let manual_cookie = manual_cookies.get(id.cli_name()).map(|s| s.to_string());
+                            manual_cookie.or_else(|| {
+                                // Try browser cookie extraction if no manual cookie
+                                id.cookie_domain().and_then(|domain| {
+                                    get_cookie_header(domain).ok().filter(|h| !h.is_empty())
+                                })
+                            })
+                        };
+
+                        let api_key = if env_override.is_some() {
+                            // If we have env override, extract API key from it
+                            env_override.as_ref().and_then(|env| env.values().next().cloned())
+                        } else {
+                            api_keys.get(id.cli_name()).map(|s| s.to_string())
+                        };
+
                         let ctx = FetchContext {
-                            manual_cookie_header: manual_cookie,
+                            manual_cookie_header: cookie_header,
                             api_key,
                             ..FetchContext::default()
                         };
@@ -377,6 +548,10 @@ impl CodexBarApp {
                             if let Ok(Some(status)) = status_result {
                                 result.status_level = status.level;
                                 result.status_description = Some(status.description);
+                            }
+
+                            if result.error.is_none() {
+                                result.usage_breakdown = load_usage_breakdown_points(id, result.account.as_deref());
                             }
 
                             let provider_name_lower = provider_name.to_lowercase();
@@ -544,13 +719,30 @@ impl eframe::App for CodexBarApp {
                 }
             } else {
                 // Respect menu_bar_display_mode setting
+                // Use per-provider metric preferences from settings
                 let provider_usages: Vec<ProviderUsage> = providers
                     .iter()
                     .filter(|p| p.session_percent.is_some())
-                    .map(|p| ProviderUsage {
-                        name: p.display_name.clone(),
-                        session_percent: p.session_percent.unwrap_or(0.0),
-                        weekly_percent: p.weekly_percent.unwrap_or(0.0),
+                    .map(|p| {
+                        // Get the metric preference for this provider
+                        let metric_pref = crate::core::ProviderId::from_cli_name(&p.name)
+                            .map(|id| self.settings.get_provider_metric(id))
+                            .unwrap_or_default();
+                        let preferred_percent = p.get_preferred_metric(metric_pref);
+                        // For credits metric, convert from "remaining" to "used" for consistent tray behavior
+                        // Credits are stored as remaining %, but tray expects used % for severity coloring
+                        let used_percent = if metric_pref == crate::settings::MetricPreference::Credits {
+                            100.0 - preferred_percent // Convert remaining to used
+                        } else {
+                            preferred_percent // Already used %
+                        };
+                        // Weekly percent is always usage-based (not credits)
+                        let weekly_percent = p.weekly_percent.unwrap_or(used_percent);
+                        ProviderUsage {
+                            name: p.display_name.clone(),
+                            session_percent: used_percent, // Always use "used %" for tray severity
+                            weekly_percent,
+                        }
                     })
                     .collect();
 
@@ -581,6 +773,45 @@ impl eframe::App for CodexBarApp {
                     TrayMenuAction::Quit => std::process::exit(0),
                     TrayMenuAction::Open => {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    }
+                    TrayMenuAction::Refresh => {
+                        if !is_refreshing {
+                            self.refresh_providers();
+                        }
+                    }
+                    TrayMenuAction::Settings => {
+                        self.preferences_window.open();
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    }
+                    TrayMenuAction::CheckForUpdates => {
+                        // Trigger update check in background
+                        let state = Arc::clone(&self.state);
+                        let update_channel = self.settings.update_channel;
+                        std::thread::spawn(move || {
+                            let rt = tokio::runtime::Runtime::new().unwrap();
+                            rt.block_on(async {
+                                if let Some(update) = updater::check_for_updates_with_channel(update_channel).await {
+                                    if let Ok(mut s) = state.lock() {
+                                        s.update_available = Some(update);
+                                        s.update_checked = true;
+                                        s.update_dismissed = false;
+                                    }
+                                } else if let Ok(mut s) = state.lock() {
+                                    s.update_checked = true;
+                                }
+                            });
+                        });
+                    }
+                    TrayMenuAction::ToggleProvider(provider_name) => {
+                        // Toggle provider enabled state
+                        if let Some(provider_id) = ProviderId::from_cli_name(&provider_name) {
+                            self.settings.toggle_provider(provider_id);
+                            if let Err(e) = self.settings.save() {
+                                tracing::error!("Failed to save settings: {}", e);
+                            }
+                            // Refresh to update the UI with new provider list
+                            self.refresh_providers();
+                        }
                     }
                 }
             }
@@ -744,6 +975,17 @@ impl eframe::App for CodexBarApp {
                                             text_color,
                                         );
 
+                                        // Status dot overlay for non-Operational statuses
+                                        if provider.status_level != StatusLevel::Operational && provider.status_level != StatusLevel::Unknown {
+                                            let dot_radius = 4.0;
+                                            let dot_center = egui::pos2(
+                                                rect.max.x - dot_radius - 4.0,
+                                                rect.min.y + dot_radius + 4.0,
+                                            );
+                                            let dot_color = status_color(provider.status_level);
+                                            ui.painter().circle_filled(dot_center, dot_radius, dot_color);
+                                        }
+
                                         if response.clicked() {
                                             if let Ok(mut state) = self.state.lock() {
                                                 state.selected_provider_idx = *original_idx;
@@ -771,17 +1013,47 @@ impl eframe::App for CodexBarApp {
                             // SELECTED PROVIDER DETAIL CARD
                             // ════════════════════════════════════════════════════════════
                             let mut manual_refresh_requested = false;
+                            let mut account_switch_provider: Option<String> = None;
                             let show_credits = self.settings.show_credits_extra_usage;
+                            let show_as_used = self.settings.show_as_used;
+                            let hide_personal_info = self.settings.hide_personal_info;
                             if let Some((_, selected_provider)) = visible_providers.iter().find(|(idx, _)| *idx == selected_idx) {
-                                manual_refresh_requested = draw_provider_detail_card(ui, selected_provider, &mut self.icon_cache, show_credits);
+                                let (refresh, switch) = draw_provider_detail_card(
+                                    ui,
+                                    selected_provider,
+                                    &mut self.icon_cache,
+                                    show_credits,
+                                    show_as_used,
+                                    hide_personal_info,
+                                );
+                                manual_refresh_requested = refresh;
+                                account_switch_provider = switch;
                             } else if let Some((_, first_provider)) = visible_providers.first() {
                                 // Fallback to first if selected isn't visible
-                                manual_refresh_requested = draw_provider_detail_card(ui, first_provider, &mut self.icon_cache, show_credits);
+                                let (refresh, switch) = draw_provider_detail_card(
+                                    ui,
+                                    first_provider,
+                                    &mut self.icon_cache,
+                                    show_credits,
+                                    show_as_used,
+                                    hide_personal_info,
+                                );
+                                manual_refresh_requested = refresh;
+                                account_switch_provider = switch;
                             }
 
                             // Trigger manual refresh if requested
                             if manual_refresh_requested && !is_refreshing {
                                 self.refresh_providers();
+                            }
+
+                            // Handle account switch request - open preferences to Providers tab with provider selected
+                            if let Some(provider_name) = account_switch_provider {
+                                if let Some(provider_id) = ProviderId::from_cli_name(&provider_name) {
+                                    self.preferences_window.active_tab = super::preferences::PreferencesTab::Providers;
+                                    self.preferences_window.selected_provider = Some(provider_id);
+                                    self.preferences_window.open();
+                                }
                             }
                         }
                     } else {
@@ -855,15 +1127,18 @@ impl eframe::App for CodexBarApp {
 }
 
 /// Draw a provider detail card - macOS UsageMenuCardView style
-/// Structure: Header → Divider → Metrics (Session, Weekly, Model) → Credits → Cost
-/// Returns true if the user clicked the Refresh button
+/// Structure: Header -> Divider -> Metrics (Session, Weekly, Model) -> Credits -> Cost
+/// Returns (refresh_requested, account_switch_provider_name)
 fn draw_provider_detail_card(
     ui: &mut egui::Ui,
     provider: &ProviderData,
     _icon_cache: &mut ProviderIconCache,
     show_credits_extra: bool,
-) -> bool {
+    show_as_used: bool,
+    hide_personal_info: bool,
+) -> (bool, Option<String>) {
     let mut refresh_requested = false;
+    let mut account_switch_requested: Option<String> = None;
     let brand_color = provider_color(&provider.name);
     let content_width = ui.available_width() - 32.0; // 16px padding each side
 
@@ -890,13 +1165,19 @@ fn draw_provider_detail_card(
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(16.0); // Right padding
-                        // Email - .subheadline, secondary color
+                        // Email - .subheadline, secondary color (redacted if privacy mode enabled)
                         if let Some(account) = &provider.account {
-                            ui.label(
-                                RichText::new(account)
-                                    .size(FontSize::XS) // Smaller
-                                    .color(Theme::TEXT_SECONDARY),
+                            let display_account = PersonalInfoRedactor::redact_email(
+                                Some(account.as_str()),
+                                hide_personal_info
                             );
+                            if !display_account.is_empty() {
+                                ui.label(
+                                    RichText::new(&display_account)
+                                        .size(FontSize::XS) // Smaller
+                                        .color(Theme::TEXT_SECONDARY),
+                                );
+                            }
                         }
                     });
                 });
@@ -932,6 +1213,21 @@ fn draw_provider_detail_card(
                         }
                     });
                 });
+
+                // Row 3: Status description (if non-Operational)
+                if provider.status_level != StatusLevel::Operational && provider.status_level != StatusLevel::Unknown {
+                    if let Some(ref status_desc) = provider.status_description {
+                        ui.add_space(2.0);
+                        ui.horizontal(|ui| {
+                            let status_col = status_color(provider.status_level);
+                            ui.label(
+                                RichText::new(format!("Status: {}", status_desc))
+                                    .size(FontSize::XS)
+                                    .color(status_col),
+                            );
+                        });
+                    }
+                }
             });
         });
 
@@ -941,8 +1237,9 @@ fn draw_provider_detail_card(
         let has_metrics = provider.session_percent.is_some() || provider.weekly_percent.is_some();
         let has_credits = provider.credits_remaining.is_some();
         let has_cost = provider.cost_used.is_some();
+        let has_usage_breakdown = !provider.usage_breakdown.is_empty();
 
-        if has_metrics || provider.error.is_some() || has_credits || has_cost {
+        if has_metrics || provider.error.is_some() || has_credits || has_cost || has_usage_breakdown {
             ui.add_space(4.0);
             draw_horizontal_separator(ui, 0.0);
         }
@@ -959,6 +1256,7 @@ fn draw_provider_detail_card(
                     ui,
                     "Session",
                     session_pct,
+                    show_as_used,
                     provider.session_reset.as_deref(),
                     brand_color,
                     content_width,
@@ -975,6 +1273,7 @@ fn draw_provider_detail_card(
                     ui,
                     "Weekly",
                     weekly_pct,
+                    show_as_used,
                     provider.weekly_reset.as_deref(),
                     brand_color,
                     content_width,
@@ -992,6 +1291,7 @@ fn draw_provider_detail_card(
                     ui,
                     model_label,
                     model_pct,
+                    show_as_used,
                     None,
                     brand_color,
                     content_width,
@@ -1073,14 +1373,46 @@ fn draw_provider_detail_card(
                         let _ = open::that(url);
                     }
                 }
+
+                // Credits history chart
+                if !provider.credits_history.is_empty() {
+                    ui.add_space(8.0);
+                    let chart_points: Vec<ChartPoint> = provider.credits_history
+                        .iter()
+                        .map(|(date, value)| ChartPoint::new(date.clone(), *value))
+                        .collect();
+                    let mut chart = CreditsHistoryChart::new(chart_points);
+                    chart.show(ui);
+                }
             }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // USAGE BREAKDOWN SECTION - stacked service credits chart
+        // ═══════════════════════════════════════════════════════════════════
+        if has_usage_breakdown {
+            if has_metrics || has_credits {
+                draw_horizontal_separator(ui, 0.0);
+            }
+            ui.add_space(12.0);
+
+            ui.label(
+                RichText::new("Usage breakdown")
+                    .size(FontSize::BASE)
+                    .color(Theme::TEXT_PRIMARY)
+                    .strong(),
+            );
+            ui.add_space(6.0);
+
+            let mut chart = UsageBreakdownChart::new(provider.usage_breakdown.clone());
+            chart.show(ui);
         }
 
         // ═══════════════════════════════════════════════════════════════════
         // COST SECTION - macOS TokenUsageSection style
         // ═══════════════════════════════════════════════════════════════════
         if show_credits_extra && (provider.cost_used.is_some() || !provider.cost_history.is_empty()) {
-            if has_metrics || has_credits {
+            if has_metrics || has_credits || has_usage_breakdown {
                 draw_horizontal_separator(ui, 0.0);
             }
             ui.add_space(12.0);
@@ -1117,6 +1449,17 @@ fn draw_provider_detail_card(
                         .color(Theme::TEXT_PRIMARY)
                 );
             }
+
+            // Cost history chart
+            if !provider.cost_history.is_empty() {
+                ui.add_space(8.0);
+                let chart_points: Vec<ChartPoint> = provider.cost_history
+                    .iter()
+                    .map(|(date, cost)| ChartPoint::new(date.clone(), *cost))
+                    .collect();
+                let mut chart = CostHistoryChart::new(chart_points, brand_color);
+                chart.show(ui);
+            }
         }
 
         // ═══════════════════════════════════════════════════════════════════
@@ -1127,7 +1470,7 @@ fn draw_provider_detail_card(
         let has_error = provider.error.is_some();
 
         if has_dashboard || has_status_issue || has_error {
-            if has_metrics || has_credits || has_cost {
+            if has_metrics || has_credits || has_cost || has_usage_breakdown {
                 draw_horizontal_separator(ui, 0.0);
             }
             ui.add_space(6.0);
@@ -1138,9 +1481,13 @@ fn draw_provider_detail_card(
                 refresh_requested = true;
             }
 
-            // Switch Account link
-            if draw_menu_item(ui, "👤", "Switch Account...") {
-                // TODO: Implement account switching
+            // Switch Account link - only show for providers that support token accounts
+            if TokenAccountSupport::is_supported(
+                ProviderId::from_cli_name(&provider.name).unwrap_or(ProviderId::Claude)
+            ) {
+                if draw_menu_item(ui, "->", "Switch Account...") {
+                    account_switch_requested = Some(provider.name.clone());
+                }
             }
 
             // Usage Dashboard link
@@ -1171,7 +1518,7 @@ fn draw_provider_detail_card(
             ui.add_space(4.0);
         }
 
-        refresh_requested
+        (refresh_requested, account_switch_requested)
     }).inner
 }
 
@@ -1233,6 +1580,7 @@ fn draw_metric_row(
     ui: &mut egui::Ui,
     title: &str,
     percent: f64,
+    show_as_used: bool,
     reset_text: Option<&str>,
     color: Color32,
     _content_width: f32,
@@ -1249,6 +1597,9 @@ fn draw_metric_row(
 
     ui.add_space(6.0);
 
+    let display_percent = usage_display_percent(percent, show_as_used);
+    let display_pace_percent = pace_percent.map(|pace| if show_as_used { pace } else { -pace });
+
     // Progress bar row - 8px height like macOS
     let bar_width = ui.available_width();
     let bar_height = 8.0;
@@ -1258,16 +1609,16 @@ fn draw_metric_row(
     ui.painter().rect_filled(rect, Rounding::same(4.0), Theme::progress_track());
 
     // Fill
-    let fill_w = rect.width() * (percent as f32 / 100.0).clamp(0.0, 1.0);
+    let fill_w = rect.width() * (display_percent as f32 / 100.0).clamp(0.0, 1.0);
     if fill_w > 0.0 {
         let fill_rect = Rect::from_min_size(rect.min, Vec2::new(fill_w, bar_height));
         ui.painter().rect_filled(fill_rect, Rounding::same(4.0), color);
     }
 
     // Pace marker - thin vertical line showing expected usage position
-    if let Some(pace_diff) = pace_percent {
+    if let Some(pace_diff) = display_pace_percent {
         // pace_percent is the difference (actual - expected), so expected = actual - pace_diff
-        let expected_position = (percent - pace_diff).clamp(0.0, 100.0);
+        let expected_position = (display_percent - pace_diff).clamp(0.0, 100.0);
         let marker_x = rect.min.x + rect.width() * (expected_position as f32 / 100.0);
 
         // Draw 2px wide vertical line in a contrasting color (white with transparency)
@@ -1285,13 +1636,13 @@ fn draw_metric_row(
     // Info row: X% used (left) | Pace status | Resets in Xh (right) - .font(.footnote)
     ui.horizontal(|ui| {
         ui.label(
-            RichText::new(format!("{:.0}% used", percent))
+            RichText::new(usage_display_label(display_percent, show_as_used))
                 .size(FontSize::XS)
                 .color(Theme::TEXT_PRIMARY),
         );
 
         // Pace status indicator
-        if pace_percent.is_some() {
+        if display_pace_percent.is_some() {
             ui.add_space(8.0);
             let (pace_text, pace_color) = if pace_lasts_to_reset {
                 ("On track", Theme::GREEN)

@@ -105,6 +105,33 @@ impl ProviderId {
         }
     }
 
+    /// Get the cookie domain for this provider.
+    /// Returns the domain used for cookie extraction, or None if the provider
+    /// doesn't use cookies for authentication.
+    pub fn cookie_domain(&self) -> Option<&'static str> {
+        match self {
+            ProviderId::Claude => Some("claude.ai"),
+            ProviderId::Cursor => Some("cursor.com"),
+            ProviderId::Factory => Some("app.factory.ai"),
+            ProviderId::Codex => Some("chatgpt.com"),
+            ProviderId::Gemini => Some("aistudio.google.com"),
+            ProviderId::Kiro => Some("kiro.dev"),
+            ProviderId::Kimi => Some("kimi.moonshot.cn"),
+            ProviderId::KimiK2 => Some("platform.moonshot.cn"),
+            ProviderId::MiniMax => Some("platform.minimaxi.com"),
+            ProviderId::OpenCode => Some("opencode.ai"),
+            ProviderId::Augment => Some("app.augmentcode.com"),
+            ProviderId::Amp => Some("sourcegraph.com"),
+            ProviderId::Antigravity => Some("antigravity.ai"),
+            // Token-based providers (don't use cookies)
+            ProviderId::Copilot => None,
+            ProviderId::Zai => None,
+            ProviderId::VertexAI => None,
+            ProviderId::JetBrains => None,
+            ProviderId::Synthetic => None,
+        }
+    }
+
     /// Parse from CLI name string
     pub fn from_cli_name(name: &str) -> Option<Self> {
         match name.to_lowercase().as_str() {
@@ -425,5 +452,24 @@ mod tests {
         assert_eq!(map.get("anthropic"), Some(&ProviderId::Claude));
         assert_eq!(map.get("codex"), Some(&ProviderId::Codex));
         assert_eq!(map.get("openai"), Some(&ProviderId::Codex));
+    }
+
+    #[test]
+    fn test_provider_id_cookie_domain() {
+        // Cookie-based providers
+        assert_eq!(ProviderId::Claude.cookie_domain(), Some("claude.ai"));
+        assert_eq!(ProviderId::Cursor.cookie_domain(), Some("cursor.com"));
+        assert_eq!(ProviderId::Factory.cookie_domain(), Some("app.factory.ai"));
+        assert_eq!(ProviderId::Codex.cookie_domain(), Some("chatgpt.com"));
+        assert_eq!(ProviderId::Gemini.cookie_domain(), Some("aistudio.google.com"));
+        assert_eq!(ProviderId::Kiro.cookie_domain(), Some("kiro.dev"));
+        assert_eq!(ProviderId::Kimi.cookie_domain(), Some("kimi.moonshot.cn"));
+        assert_eq!(ProviderId::OpenCode.cookie_domain(), Some("opencode.ai"));
+
+        // Token-based providers (no cookies)
+        assert_eq!(ProviderId::Copilot.cookie_domain(), None);
+        assert_eq!(ProviderId::Zai.cookie_domain(), None);
+        assert_eq!(ProviderId::VertexAI.cookie_domain(), None);
+        assert_eq!(ProviderId::JetBrains.cookie_domain(), None);
     }
 }

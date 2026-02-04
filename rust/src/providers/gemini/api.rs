@@ -2,7 +2,7 @@
 //!
 //! Uses Google Cloud Code Private API with OAuth tokens from ~/.gemini/oauth_creds.json
 
-use crate::core::{ProviderError, RateWindow};
+use crate::core::{FetchContext, ProviderError, RateWindow};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -26,8 +26,10 @@ impl GeminiApi {
 
     /// Fetch quota information from the Gemini API
     /// Returns (primary RateWindow, optional model-specific RateWindow, optional email)
-    pub async fn fetch_quota(&self) -> Result<(RateWindow, Option<RateWindow>, Option<String>), ProviderError> {
-        // Load credentials
+    /// Note: Gemini quota API requires OAuth tokens, not API keys
+    pub async fn fetch_quota(&self, _ctx: &FetchContext) -> Result<(RateWindow, Option<RateWindow>, Option<String>), ProviderError> {
+        // Gemini quota endpoint requires OAuth credentials (not API keys)
+        // Always load OAuth credentials from ~/.gemini/oauth_creds.json
         let mut creds = self.load_credentials()?;
 
         // Check if token needs refresh
@@ -36,7 +38,7 @@ impl GeminiApi {
             creds = self.refresh_token(&creds).await?;
         }
 
-        let access_token = creds.access_token.as_ref()
+        let access_token = creds.access_token.clone()
             .ok_or_else(|| ProviderError::AuthRequired)?;
 
         // Fetch quota
@@ -65,7 +67,8 @@ impl GeminiApi {
             .await
             .map_err(|e| ProviderError::Parse(e.to_string()))?;
 
-        self.parse_quota_response(quota_response, &creds)
+        // Since we use OAuth, we can use the credentials we already loaded for email extraction
+        self.parse_quota_response(quota_response, Some(&creds))
     }
 
     fn load_credentials(&self) -> Result<OAuthCredentials, ProviderError> {
@@ -179,7 +182,7 @@ impl GeminiApi {
     fn parse_quota_response(
         &self,
         response: QuotaResponse,
-        creds: &OAuthCredentials,
+        creds: Option<&OAuthCredentials>,
     ) -> Result<(RateWindow, Option<RateWindow>, Option<String>), ProviderError> {
         let buckets = response.buckets.ok_or_else(|| {
             ProviderError::Parse("No quota buckets in response".to_string())
@@ -244,7 +247,8 @@ impl GeminiApi {
         };
 
         // Extract email from ID token
-        let email = creds.id_token.as_ref()
+        let email = creds
+            .and_then(|c| c.id_token.as_ref())
             .and_then(|token| extract_email_from_jwt(token));
 
         Ok((primary, model_specific, email))

@@ -204,6 +204,7 @@ pub struct CodexBarApp {
     preferences_window: PreferencesWindow,
     shortcut_manager: Option<ShortcutManager>,
     icon_cache: ProviderIconCache,
+    was_refreshing: bool, // Track previous frame's refresh state
 }
 
 impl CodexBarApp {
@@ -216,8 +217,8 @@ impl CodexBarApp {
                 FontData::from_owned(font_data).into(),
             );
             fonts.families
-                .get_mut(&FontFamily::Proportional)
-                .unwrap()
+                .entry(FontFamily::Proportional)
+                .or_default()
                 .push("segoe_symbols".to_owned());
         }
         cc.egui_ctx.set_fonts(fonts);
@@ -315,6 +316,7 @@ impl CodexBarApp {
             preferences_window: PreferencesWindow::new(),
             shortcut_manager,
             icon_cache: ProviderIconCache::new(),
+            was_refreshing: false,
         }
     }
 
@@ -825,6 +827,21 @@ impl eframe::App for CodexBarApp {
 
         // Show preferences window
         self.preferences_window.show(ctx);
+
+        // Check if preferences window requested a provider refresh
+        if self.preferences_window.take_refresh_requested() {
+            self.refresh_providers();
+        }
+
+        // Reload preferences snapshot when refresh completes (is_refreshing transitions to false)
+        if self.preferences_window.is_open {
+            let is_refreshing = self.state.lock().map(|s| s.is_refreshing).unwrap_or(false);
+            if self.was_refreshing && !is_refreshing {
+                // Refresh just completed - reload the snapshot
+                self.preferences_window.reload_snapshot();
+            }
+            self.was_refreshing = is_refreshing;
+        }
 
         // Sync settings - save immediately when changed
         if self.preferences_window.settings_changed {

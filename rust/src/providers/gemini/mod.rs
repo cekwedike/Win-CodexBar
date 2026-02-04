@@ -56,10 +56,10 @@ impl Provider for GeminiProvider {
         &self.metadata
     }
 
-    async fn fetch_usage(&self, _ctx: &FetchContext) -> Result<ProviderFetchResult, ProviderError> {
+    async fn fetch_usage(&self, ctx: &FetchContext) -> Result<ProviderFetchResult, ProviderError> {
         tracing::debug!("Fetching Gemini usage via API");
 
-        match self.api.fetch_quota().await {
+        match self.api.fetch_quota(ctx).await {
             Ok((primary, model_specific, email)) => {
                 let mut usage = UsageSnapshot::new(primary);
                 if let Some(ms) = model_specific {

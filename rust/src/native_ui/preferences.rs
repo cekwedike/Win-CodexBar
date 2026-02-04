@@ -12,7 +12,7 @@ use eframe::egui::{self, Color32, RichText, Rounding, Stroke, Vec2, Rect};
 use super::provider_icons::ProviderIconCache;
 use super::theme::{provider_color, provider_icon, FontSize, Radius, Spacing, Theme};
 use crate::settings::{ApiKeys, ManualCookies, Settings, get_api_key_providers};
-use crate::core::ProviderId;
+use crate::core::{ProviderId, WidgetSnapshot, WidgetSnapshotStore};
 
 // Thread-local icon cache for viewport rendering
 thread_local! {
@@ -98,6 +98,8 @@ struct PreferencesSharedState {
     show_api_key_input: bool,
     api_key_status_msg: Option<(String, bool)>,
     selected_provider: Option<ProviderId>,
+    refresh_requested: bool,
+    cached_snapshot: Option<WidgetSnapshot>,
 }
 
 impl Default for PreferencesWindow {
@@ -121,6 +123,8 @@ impl Default for PreferencesWindow {
             show_api_key_input: false,
             api_key_status_msg: None,
             selected_provider: None,
+            refresh_requested: false,
+            cached_snapshot: WidgetSnapshotStore::load(),
         }));
 
         Self {
@@ -160,13 +164,14 @@ impl PreferencesWindow {
         self.new_api_key_value.clear();
         self.show_api_key_input = false;
 
-        // Sync to shared state
+        // Sync to shared state and reload snapshot for fresh data after any background refreshes
         if let Ok(mut state) = self.shared_state.lock() {
             state.is_open = true;
             state.settings = self.settings.clone();
             state.cookies = self.cookies.clone();
             state.api_keys = self.api_keys.clone();
             state.settings_changed = false;
+            state.cached_snapshot = WidgetSnapshotStore::load();
         }
     }
 
@@ -184,6 +189,24 @@ impl PreferencesWindow {
 
         if let Ok(mut state) = self.shared_state.lock() {
             state.is_open = false;
+        }
+    }
+
+    /// Check if a refresh was requested and reset the flag
+    pub fn take_refresh_requested(&mut self) -> bool {
+        if let Ok(mut state) = self.shared_state.lock() {
+            if state.refresh_requested {
+                state.refresh_requested = false;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Reload the cached snapshot from disk (call after refresh completes)
+    pub fn reload_snapshot(&mut self) {
+        if let Ok(mut state) = self.shared_state.lock() {
+            state.cached_snapshot = WidgetSnapshotStore::load();
         }
     }
 
@@ -1746,6 +1769,24 @@ fn render_provider_detail_panel(ui: &mut egui::Ui, provider_id: ProviderId, shar
         state.settings.enabled_providers.contains(provider_id.cli_name())
     } else { true };
 
+    // Use cached snapshot data for this provider (loaded once, not every frame)
+    let entry = if let Ok(state) = shared_state.lock() {
+        state.cached_snapshot.as_ref().and_then(|s| s.entry_for(provider_id).cloned())
+    } else {
+        None
+    };
+
+    // Extract data from entry or use defaults
+    let account_email = entry.as_ref().and_then(|e| e.account_email.clone());
+    let login_method = entry.as_ref().and_then(|e| e.login_method.clone());
+    let primary_rate = entry.as_ref().and_then(|e| e.primary.clone());
+    let secondary_rate = entry.as_ref().and_then(|e| e.secondary.clone());
+    let tertiary_rate = entry.as_ref().and_then(|e| e.tertiary.clone());
+    let credits_remaining = entry.as_ref().and_then(|e| e.credits_remaining);
+    let code_review_percent = entry.as_ref().and_then(|e| e.code_review_remaining_percent);
+    let token_usage = entry.as_ref().and_then(|e| e.token_usage.clone());
+    let updated_at = entry.as_ref().map(|e| e.updated_at);
+
     // ═══════════════════════════════════════════════════════════
     // HEADER - Icon, name, version, refresh, toggle
     // ═══════════════════════════════════════════════════════════
@@ -1779,8 +1820,23 @@ fn render_provider_detail_panel(ui: &mut egui::Ui, provider_id: ProviderId, shar
                     .color(Theme::TEXT_PRIMARY)
                     .strong()
             );
+            let updated_str = if let Some(ts) = updated_at {
+                let now = chrono::Utc::now();
+                let diff = now - ts;
+                if diff.num_seconds() < 60 {
+                    "just now".to_string()
+                } else if diff.num_minutes() < 60 {
+                    format!("{}m ago", diff.num_minutes())
+                } else if diff.num_hours() < 24 {
+                    format!("{}h ago", diff.num_hours())
+                } else {
+                    format!("{}d ago", diff.num_days())
+                }
+            } else {
+                "never".to_string()
+            };
             ui.label(
-                RichText::new(format!("{} • just now", provider_id.cli_name()))
+                RichText::new(format!("{} • {}", provider_id.cli_name(), updated_str))
                     .size(FontSize::SM)
                     .color(Theme::TEXT_MUTED)
             );
@@ -1811,7 +1867,9 @@ fn render_provider_detail_panel(ui: &mut egui::Ui, provider_id: ProviderId, shar
                     .rounding(Rounding::same(Radius::SM))
                     .min_size(Vec2::new(32.0, 32.0))
             ).clicked() {
-                // TODO: Refresh provider
+                if let Ok(mut state) = shared_state.lock() {
+                    state.refresh_requested = true;
+                }
             }
         });
     });
@@ -1821,6 +1879,24 @@ fn render_provider_detail_panel(ui: &mut egui::Ui, provider_id: ProviderId, shar
     // ═══════════════════════════════════════════════════════════
     // INFO GRID - State, Source, Version, etc.
     // ═══════════════════════════════════════════════════════════
+    let updated_display = if let Some(ts) = updated_at {
+        let now = chrono::Utc::now();
+        let diff = now - ts;
+        if diff.num_seconds() < 60 {
+            "Updated just now".to_string()
+        } else if diff.num_minutes() < 60 {
+            format!("Updated {}m ago", diff.num_minutes())
+        } else if diff.num_hours() < 24 {
+            format!("Updated {}h ago", diff.num_hours())
+        } else {
+            format!("Updated {}d ago", diff.num_days())
+        }
+    } else {
+        "Never updated".to_string()
+    };
+    let account_display = account_email.as_deref().unwrap_or("Not logged in");
+    let plan_display = login_method.as_deref().unwrap_or("Unknown");
+
     egui::Grid::new("provider_info_grid")
         .num_columns(2)
         .spacing([16.0, 8.0])
@@ -1828,10 +1904,10 @@ fn render_provider_detail_panel(ui: &mut egui::Ui, provider_id: ProviderId, shar
             info_row(ui, "State", if is_enabled { "Enabled" } else { "Disabled" });
             info_row(ui, "Source", "oauth + web");
             info_row(ui, "Version", provider_id.cli_name());
-            info_row(ui, "Updated", "Updated just now");
+            info_row(ui, "Updated", &updated_display);
             info_row(ui, "Status", "All Systems Operational");
-            info_row(ui, "Account", "user@example.com");
-            info_row(ui, "Plan", "Pro");
+            info_row(ui, "Account", account_display);
+            info_row(ui, "Plan", plan_display);
         });
 
     ui.add_space(Spacing::LG);
@@ -1847,41 +1923,93 @@ fn render_provider_detail_panel(ui: &mut egui::Ui, provider_id: ProviderId, shar
     );
     ui.add_space(Spacing::SM);
 
-    // Session usage bar
-    usage_bar_row(ui, "Session", 25.0, "25% used", Some("Resets in 5h"), brand_color);
-    ui.add_space(8.0);
+    // Helper to format reset time
+    let format_reset = |rate: &crate::core::RateWindow| -> Option<String> {
+        // First try to compute from resets_at timestamp
+        if let Some(ts) = rate.resets_at {
+            let now = chrono::Utc::now();
+            let diff = ts - now;
+            if diff.num_seconds() <= 0 {
+                return Some("Resetting...".to_string());
+            } else if diff.num_hours() >= 24 {
+                return Some(format!("Resets in {}d {}h", diff.num_days(), diff.num_hours() % 24));
+            } else {
+                return Some(format!("Resets in {}h {}m", diff.num_hours(), diff.num_minutes() % 60));
+            }
+        }
+        // Fall back to reset_description if available (for CLI/web sources without parsed timestamp)
+        rate.reset_description.clone()
+    };
 
-    // Weekly usage bar
-    usage_bar_row(ui, "Weekly", 75.0, "75% used", Some("Resets in 5d 14h"), brand_color);
-    ui.add_space(8.0);
+    // Session usage bar (primary rate)
+    if let Some(ref rate) = primary_rate {
+        let percent = rate.used_percent;
+        let reset_str = format_reset(rate);
+        usage_bar_row(ui, "Session", percent as f32, &format!("{:.0}% used", percent), reset_str.as_deref(), brand_color);
+        ui.add_space(8.0);
+    }
 
-    // Code review (if applicable)
-    usage_bar_row(ui, "Code review", 4.0, "4% used", None, brand_color);
+    // Weekly usage bar (secondary rate)
+    if let Some(ref rate) = secondary_rate {
+        let percent = rate.used_percent;
+        let reset_str = format_reset(rate);
+        usage_bar_row(ui, "Weekly", percent as f32, &format!("{:.0}% used", percent), reset_str.as_deref(), brand_color);
+        ui.add_space(8.0);
+    }
+
+    // Tertiary rate (e.g., code review)
+    if let Some(ref rate) = tertiary_rate {
+        let percent = rate.used_percent;
+        let reset_str = rate.reset_description.as_deref();
+        usage_bar_row(ui, "Code review", percent as f32, &format!("{:.0}% used", percent), reset_str, brand_color);
+        ui.add_space(8.0);
+    }
+
+    // Code review (if available and no tertiary rate)
+    // Note: code_review_remaining_percent is the REMAINING percent, so convert to used
+    if tertiary_rate.is_none() {
+        if let Some(remaining) = code_review_percent {
+            let used = 100.0 - remaining;
+            usage_bar_row(ui, "Code review", used as f32, &format!("{:.0}% used", used), None, brand_color);
+        }
+    }
 
     ui.add_space(Spacing::LG);
 
     // ═══════════════════════════════════════════════════════════
     // CREDITS SECTION (if applicable)
     // ═══════════════════════════════════════════════════════════
-    ui.horizontal(|ui| {
-        ui.label(
-            RichText::new("Credits")
-                .size(FontSize::SM)
-                .color(Theme::TEXT_SECONDARY)
-        );
-        ui.add_space(16.0);
-        ui.label(
-            RichText::new("4235.2 left")
-                .size(FontSize::SM)
-                .color(Theme::TEXT_PRIMARY)
-        );
-    });
-
-    ui.add_space(Spacing::SM);
+    if let Some(credits) = credits_remaining {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Credits")
+                    .size(FontSize::SM)
+                    .color(Theme::TEXT_SECONDARY)
+            );
+            ui.add_space(16.0);
+            ui.label(
+                RichText::new(format!("{:.1} left", credits))
+                    .size(FontSize::SM)
+                    .color(Theme::TEXT_PRIMARY)
+            );
+        });
+        ui.add_space(Spacing::SM);
+    }
 
     // ═══════════════════════════════════════════════════════════
     // COST SECTION
     // ═══════════════════════════════════════════════════════════
+    let (today_cost, today_tokens, monthly_cost, monthly_tokens) = if let Some(ref usage) = token_usage {
+        (
+            usage.session_cost_usd.unwrap_or(0.0),
+            usage.session_tokens.unwrap_or(0),
+            usage.last_30_days_cost_usd.unwrap_or(0.0),
+            usage.last_30_days_tokens.unwrap_or(0),
+        )
+    } else {
+        (0.0, 0, 0.0, 0)
+    };
+
     ui.horizontal(|ui| {
         ui.label(
             RichText::new("Cost")
@@ -1891,12 +2019,12 @@ fn render_provider_detail_panel(ui: &mut egui::Ui, provider_id: ProviderId, shar
         ui.add_space(32.0);
         ui.vertical(|ui| {
             ui.label(
-                RichText::new("Today: $0.00 • 0 tokens")
+                RichText::new(format!("Today: ${:.2} • {} tokens", today_cost, today_tokens))
                     .size(FontSize::SM)
                     .color(Theme::TEXT_PRIMARY)
             );
             ui.label(
-                RichText::new("Last 30 days: $0.00 • 0 tokens")
+                RichText::new(format!("Last 30 days: ${:.2} • {} tokens", monthly_cost, monthly_tokens))
                     .size(FontSize::SM)
                     .color(Theme::TEXT_MUTED)
             );

@@ -118,6 +118,12 @@ pub struct WidgetProviderEntry {
     /// Daily usage data points
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub daily_usage: Vec<DailyUsagePoint>,
+    /// Account email if available
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_email: Option<String>,
+    /// Login method/plan info (e.g., "Claude Pro", "Claude Max")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub login_method: Option<String>,
 }
 
 impl WidgetProviderEntry {
@@ -132,6 +138,8 @@ impl WidgetProviderEntry {
             code_review_remaining_percent: None,
             token_usage: None,
             daily_usage: Vec::new(),
+            account_email: None,
+            login_method: None,
         }
     }
 
@@ -167,6 +175,16 @@ impl WidgetProviderEntry {
 
     pub fn with_daily_usage(mut self, points: Vec<DailyUsagePoint>) -> Self {
         self.daily_usage = points;
+        self
+    }
+
+    pub fn with_account_email(mut self, email: impl Into<String>) -> Self {
+        self.account_email = Some(email.into());
+        self
+    }
+
+    pub fn with_login_method(mut self, method: impl Into<String>) -> Self {
+        self.login_method = Some(method.into());
         self
     }
 }

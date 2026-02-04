@@ -413,6 +413,242 @@ fn format_tokens(tokens: i64) -> String {
     }
 }
 
+/// Service usage for a single day (for stacked charts)
+#[derive(Clone, Debug)]
+pub struct ServiceUsage {
+    pub service: String,
+    pub credits_used: f64,
+}
+
+/// A single data point for usage breakdown chart
+#[derive(Clone, Debug)]
+pub struct UsageBreakdownPoint {
+    pub day: String,           // "2025-01-15" format
+    pub services: Vec<ServiceUsage>,
+    pub total_credits_used: f64,
+}
+
+impl UsageBreakdownPoint {
+    pub fn new(day: String, services: Vec<ServiceUsage>) -> Self {
+        let total_credits_used = services.iter().map(|s| s.credits_used).sum();
+        Self {
+            day,
+            services,
+            total_credits_used,
+        }
+    }
+}
+
+/// Usage breakdown chart widget (stacked bar chart by service)
+pub struct UsageBreakdownChart {
+    points: Vec<UsageBreakdownPoint>,
+    selected_index: Option<usize>,
+    service_colors: Vec<(String, Color32)>,
+}
+
+impl UsageBreakdownChart {
+    pub fn new(points: Vec<UsageBreakdownPoint>) -> Self {
+        // Build service color mapping
+        let service_colors = Self::build_service_colors(&points);
+
+        Self {
+            points,
+            selected_index: None,
+            service_colors,
+        }
+    }
+
+    fn build_service_colors(points: &[UsageBreakdownPoint]) -> Vec<(String, Color32)> {
+        // Collect all unique services and their total usage
+        let mut service_totals: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        for point in points {
+            for service in &point.services {
+                *service_totals.entry(service.service.clone()).or_insert(0.0) += service.credits_used;
+            }
+        }
+
+        // Sort by total usage descending
+        let mut sorted: Vec<_> = service_totals.into_iter().collect();
+        sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Assign colors
+        sorted.into_iter().map(|(service, _)| {
+            let color = color_for_service(&service);
+            (service, color)
+        }).collect()
+    }
+
+    fn get_service_color(&self, service: &str) -> Color32 {
+        self.service_colors.iter()
+            .find(|(s, _)| s == service)
+            .map(|(_, c)| *c)
+            .unwrap_or(Color32::GRAY)
+    }
+
+    /// Render the chart
+    pub fn show(&mut self, ui: &mut egui::Ui) {
+        if self.points.is_empty() {
+            ui.label(
+                RichText::new("No usage breakdown data.")
+                    .size(11.0)
+                    .color(Color32::GRAY),
+            );
+            return;
+        }
+
+        let max_value = self.points.iter()
+            .map(|p| p.total_credits_used)
+            .fold(0.0f64, f64::max);
+        let peak_index = self.points.iter().enumerate()
+            .max_by(|(_, a), (_, b)| a.total_credits_used.partial_cmp(&b.total_credits_used).unwrap())
+            .map(|(i, _)| i);
+
+        // Chart area
+        let chart_height = 80.0;
+        let available_width = ui.available_width();
+        let bar_width = (available_width / self.points.len() as f32) * 0.8;
+        let bar_spacing = (available_width / self.points.len() as f32) * 0.2;
+
+        let (response, painter) = ui.allocate_painter(
+            Vec2::new(available_width, chart_height),
+            egui::Sense::hover(),
+        );
+
+        let rect = response.rect;
+
+        // Draw stacked bars
+        for (i, point) in self.points.iter().enumerate() {
+            let total_bar_height = if max_value > 0.0 {
+                (point.total_credits_used / max_value) as f32 * (chart_height - 15.0)
+            } else {
+                0.0
+            };
+
+            let x = rect.left() + (i as f32 * (bar_width + bar_spacing)) + bar_spacing / 2.0;
+
+            // Check hover
+            let is_hovered = response.hover_pos().map_or(false, |pos| {
+                pos.x >= x && pos.x <= x + bar_width
+            });
+
+            if is_hovered {
+                self.selected_index = Some(i);
+            }
+
+            // Draw stacked segments from bottom to top
+            let mut current_y = rect.bottom();
+            for service in &point.services {
+                if service.credits_used <= 0.0 {
+                    continue;
+                }
+
+                let segment_height = if max_value > 0.0 {
+                    (service.credits_used / max_value) as f32 * (chart_height - 15.0)
+                } else {
+                    0.0
+                };
+
+                let segment_rect = egui::Rect::from_min_size(
+                    egui::pos2(x, current_y - segment_height),
+                    Vec2::new(bar_width, segment_height),
+                );
+
+                let mut color = self.get_service_color(&service.service);
+                if is_hovered {
+                    color = color.gamma_multiply(1.2);
+                }
+
+                painter.rect_filled(segment_rect, Rounding::same(1.0), color);
+                current_y -= segment_height;
+            }
+
+            // Draw yellow peak cap on highest day
+            if Some(i) == peak_index && total_bar_height > 5.0 {
+                let cap_height = 4.0;
+                let cap_rect = egui::Rect::from_min_size(
+                    egui::pos2(x, rect.bottom() - total_bar_height - cap_height),
+                    Vec2::new(bar_width, cap_height),
+                );
+                painter.rect_filled(cap_rect, Rounding::same(2.0), Color32::from_rgb(255, 200, 50));
+            }
+        }
+
+        // Reset selection if not hovering
+        if !response.hovered() {
+            self.selected_index = None;
+        }
+
+        ui.add_space(6.0);
+
+        // Detail text on hover
+        if let Some(idx) = self.selected_index {
+            if let Some(point) = self.points.get(idx) {
+                let date_display = format_date_display(&point.day);
+                let total_display = format!("{:.1}", point.total_credits_used);
+
+                // Show top services
+                let top_services: String = point.services.iter()
+                    .filter(|s| s.credits_used > 0.0)
+                    .take(3)
+                    .map(|s| format!("{} {:.1}", s.service, s.credits_used))
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+
+                ui.label(
+                    RichText::new(format!("{}: {} credits", date_display, total_display))
+                        .size(10.0)
+                        .color(Color32::GRAY),
+                );
+                if !top_services.is_empty() {
+                    ui.label(
+                        RichText::new(top_services)
+                            .size(10.0)
+                            .color(Color32::GRAY),
+                    );
+                }
+            }
+        }
+
+        // Legend
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            for (service, color) in &self.service_colors {
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(7.0, 7.0), egui::Sense::hover());
+                ui.painter().circle_filled(rect.center(), 3.5, *color);
+                ui.label(RichText::new(service).size(10.0).color(Color32::GRAY));
+            }
+        });
+    }
+}
+
+/// Get color for a service name
+fn color_for_service(service: &str) -> Color32 {
+    let lower = service.to_lowercase();
+
+    if lower == "cli" {
+        return Color32::from_rgb(66, 140, 245); // Blue
+    }
+    if lower.contains("github") && lower.contains("review") {
+        return Color32::from_rgb(240, 135, 46); // Orange
+    }
+    if lower.contains("api") {
+        return Color32::from_rgb(117, 191, 92); // Green
+    }
+
+    // Palette for other services
+    let palette = [
+        Color32::from_rgb(204, 115, 235), // Purple
+        Color32::from_rgb(66, 199, 219),  // Cyan
+        Color32::from_rgb(240, 188, 66),  // Yellow
+        Color32::from_rgb(235, 87, 87),   // Red
+        Color32::from_rgb(156, 156, 156), // Gray
+    ];
+
+    let idx = service.bytes().map(|b| b as usize).sum::<usize>() % palette.len();
+    palette[idx]
+}
+
 /// Format top models text for chart tooltip
 fn format_top_models(breakdowns: &[ModelBreakdown]) -> String {
     if breakdowns.is_empty() {

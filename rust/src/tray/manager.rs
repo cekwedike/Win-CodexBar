@@ -6,11 +6,13 @@
 
 use image::{ImageBuffer, Rgba, RgbaImage};
 use tray_icon::{
-    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
+    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu, CheckMenuItem},
     Icon, TrayIcon, TrayIconBuilder,
 };
 
 use super::icon::{LoadingPattern, UsageLevel};
+use crate::core::ProviderId;
+use crate::settings::Settings;
 
 const ICON_SIZE: u32 = 32;
 
@@ -93,13 +95,51 @@ pub struct TrayManager {
 impl TrayManager {
     /// Create a new tray manager with default icon
     pub fn new() -> anyhow::Result<Self> {
+        let settings = Settings::load();
         let menu = Menu::new();
-        let open_item = MenuItem::new("Open CodexBar", true, None);
-        let separator = PredefinedMenuItem::separator();
-        let quit_item = MenuItem::new("Quit", true, None);
 
+        // Open CodexBar
+        let open_item = MenuItem::with_id("open", "Open CodexBar", true, None);
         menu.append(&open_item)?;
-        menu.append(&separator)?;
+
+        // Separator
+        menu.append(&PredefinedMenuItem::separator())?;
+
+        // Refresh All
+        let refresh_item = MenuItem::with_id("refresh", "Refresh All", true, None);
+        menu.append(&refresh_item)?;
+
+        // Separator
+        menu.append(&PredefinedMenuItem::separator())?;
+
+        // Providers submenu with check items
+        let providers_submenu = Submenu::with_id("providers", "Providers", true);
+        for provider_id in ProviderId::all() {
+            let cli_name = provider_id.cli_name();
+            let display_name = provider_id.display_name();
+            let is_enabled = settings.is_provider_enabled(*provider_id);
+            let item_id = format!("provider_{}", cli_name);
+            let check_item = CheckMenuItem::with_id(&item_id, display_name, true, is_enabled, None);
+            providers_submenu.append(&check_item)?;
+        }
+        menu.append(&providers_submenu)?;
+
+        // Separator
+        menu.append(&PredefinedMenuItem::separator())?;
+
+        // Settings
+        let settings_item = MenuItem::with_id("settings", "Settings...", true, None);
+        menu.append(&settings_item)?;
+
+        // Check for Updates
+        let updates_item = MenuItem::with_id("updates", "Check for Updates", true, None);
+        menu.append(&updates_item)?;
+
+        // Separator
+        menu.append(&PredefinedMenuItem::separator())?;
+
+        // Quit
+        let quit_item = MenuItem::with_id("quit", "Quit", true, None);
         menu.append(&quit_item)?;
 
         let icon = create_bar_icon(0.0, 0.0, IconOverlay::None);
@@ -238,12 +278,19 @@ impl TrayManager {
     /// Check for menu events
     pub fn check_events() -> Option<TrayMenuAction> {
         if let Ok(event) = MenuEvent::receiver().try_recv() {
-            // Check event ID to determine action
             let id_str = event.id.0.as_str();
-            if id_str.contains("1001") || id_str.to_lowercase().contains("quit") {
+            if id_str == "quit" {
                 return Some(TrayMenuAction::Quit);
-            } else if id_str.contains("1000") || id_str.to_lowercase().contains("open") {
+            } else if id_str == "open" {
                 return Some(TrayMenuAction::Open);
+            } else if id_str == "refresh" {
+                return Some(TrayMenuAction::Refresh);
+            } else if id_str == "settings" {
+                return Some(TrayMenuAction::Settings);
+            } else if id_str == "updates" {
+                return Some(TrayMenuAction::CheckForUpdates);
+            } else if let Some(provider_name) = id_str.strip_prefix("provider_") {
+                return Some(TrayMenuAction::ToggleProvider(provider_name.to_string()));
             }
         }
         None
@@ -251,9 +298,13 @@ impl TrayManager {
 }
 
 /// Tray menu actions
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum TrayMenuAction {
     Open,
+    Refresh,
+    Settings,
+    CheckForUpdates,
+    ToggleProvider(String),
     Quit,
 }
 

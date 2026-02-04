@@ -14,6 +14,84 @@ use std::path::PathBuf;
 
 use crate::core::ProviderId;
 
+/// Update channel for receiving updates
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateChannel {
+    #[default]
+    Stable,
+    Beta,
+}
+
+impl UpdateChannel {
+    /// Get the display name for this channel
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            UpdateChannel::Stable => "Stable",
+            UpdateChannel::Beta => "Beta",
+        }
+    }
+
+    /// Get a description for this channel
+    pub fn description(&self) -> &'static str {
+        match self {
+            UpdateChannel::Stable => "Receive stable, tested releases",
+            UpdateChannel::Beta => "Get early access to new features",
+        }
+    }
+}
+
+/// Metric preference for display in tray and UI
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MetricPreference {
+    #[default]
+    Automatic,
+    Session,
+    Weekly,
+    Model,
+    Credits,
+    Average,
+}
+
+impl MetricPreference {
+    /// Get all available metric preferences
+    pub fn all() -> &'static [MetricPreference] {
+        &[
+            MetricPreference::Automatic,
+            MetricPreference::Session,
+            MetricPreference::Weekly,
+            MetricPreference::Model,
+            MetricPreference::Credits,
+            MetricPreference::Average,
+        ]
+    }
+
+    /// Get the display name for this metric
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            MetricPreference::Automatic => "Automatic",
+            MetricPreference::Session => "Session",
+            MetricPreference::Weekly => "Weekly",
+            MetricPreference::Model => "Model",
+            MetricPreference::Credits => "Credits",
+            MetricPreference::Average => "Average",
+        }
+    }
+
+    /// Get a description for this metric
+    pub fn description(&self) -> &'static str {
+        match self {
+            MetricPreference::Automatic => "Automatically select the best metric",
+            MetricPreference::Session => "Current session usage",
+            MetricPreference::Weekly => "Weekly usage limit",
+            MetricPreference::Model => "Model-specific limit",
+            MetricPreference::Credits => "Credit balance",
+            MetricPreference::Average => "Average across metrics",
+        }
+    }
+}
+
 /// Application settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -32,6 +110,12 @@ pub struct Settings {
 
     /// Whether to show notifications
     pub show_notifications: bool,
+
+    /// Whether to play sound effects for threshold alerts
+    pub sound_enabled: bool,
+
+    /// Sound volume for alerts (0-100)
+    pub sound_volume: u8,
 
     /// High usage threshold for warnings (percentage)
     pub high_usage_threshold: f64,
@@ -59,6 +143,24 @@ pub struct Settings {
 
     /// Show credits and extra usage information in the UI
     pub show_credits_extra_usage: bool,
+
+    /// Hide personal info (emails, account names) for streaming/sharing
+    pub hide_personal_info: bool,
+
+    /// Update channel for receiving updates (Stable or Beta)
+    pub update_channel: UpdateChannel,
+
+    /// Per-provider metric preference for tray display
+    #[serde(default)]
+    pub provider_metrics: HashMap<String, MetricPreference>,
+
+    /// Global keyboard shortcut to open the menu (e.g., "Ctrl+Shift+U")
+    #[serde(default = "default_global_shortcut")]
+    pub global_shortcut: String,
+}
+
+fn default_global_shortcut() -> String {
+    "Ctrl+Shift+U".to_string()
 }
 
 impl Default for Settings {
@@ -74,6 +176,8 @@ impl Default for Settings {
             start_minimized: false,
             start_at_login: false,
             show_notifications: true,
+            sound_enabled: true,
+            sound_volume: 100,
             high_usage_threshold: 70.0,
             critical_usage_threshold: 90.0,
             merge_tray_icons: false, // Show single provider by default
@@ -83,6 +187,10 @@ impl Default for Settings {
             reset_time_relative: true, // Show relative times by default
             menu_bar_display_mode: "detailed".to_string(), // Detailed mode by default
             show_credits_extra_usage: true, // Show credits + extra usage by default
+            hide_personal_info: false, // Show personal info by default
+            update_channel: UpdateChannel::default(), // Stable by default
+            provider_metrics: HashMap::new(), // Empty = use Automatic for all
+            global_shortcut: default_global_shortcut(), // Ctrl+Shift+U by default
         }
     }
 }
@@ -95,16 +203,31 @@ impl Settings {
 
     /// Load settings from disk
     pub fn load() -> Self {
-        if let Some(path) = Self::settings_path() {
+        let mut settings = if let Some(path) = Self::settings_path() {
             if path.exists() {
                 if let Ok(content) = std::fs::read_to_string(&path) {
-                    if let Ok(settings) = serde_json::from_str(&content) {
-                        return settings;
+                    if let Ok(s) = serde_json::from_str(&content) {
+                        s
+                    } else {
+                        Self::default()
                     }
+                } else {
+                    Self::default()
                 }
+            } else {
+                Self::default()
             }
+        } else {
+            Self::default()
+        };
+
+        // Sync autostart toggle with actual registry state
+        #[cfg(target_os = "windows")]
+        {
+            settings.start_at_login = Self::is_start_at_login_enabled();
         }
-        Self::default()
+
+        settings
     }
 
     /// Save settings to disk
@@ -219,6 +342,19 @@ impl Settings {
                 enabled: self.is_provider_enabled(*id),
             })
             .collect()
+    }
+
+    /// Get the metric preference for a provider
+    pub fn get_provider_metric(&self, id: ProviderId) -> MetricPreference {
+        self.provider_metrics
+            .get(id.cli_name())
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Set the metric preference for a provider
+    pub fn set_provider_metric(&mut self, id: ProviderId, metric: MetricPreference) {
+        self.provider_metrics.insert(id.cli_name().to_string(), metric);
     }
 }
 

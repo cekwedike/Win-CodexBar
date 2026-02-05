@@ -15,7 +15,7 @@ use crate::status::{fetch_provider_status, ProviderStatus as StatusInfo, StatusL
 /// Arguments for the usage command
 #[derive(Args, Debug, Default)]
 pub struct UsageArgs {
-    /// Provider to query (codex, claude, cursor, gemini, copilot, zed, antigravity, factory, all, both)
+    /// Provider to query (codex, claude, cursor, gemini, copilot, zai, antigravity, factory, all, both)
     #[arg(short, long)]
     pub provider: Option<String>,
 

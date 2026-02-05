@@ -89,19 +89,18 @@ pub enum ProviderSelection {
 }
 
 impl ProviderSelection {
-    pub fn from_arg(arg: Option<&str>) -> Self {
+    pub fn from_arg(arg: Option<&str>) -> anyhow::Result<Self> {
         match arg.map(|s| s.to_lowercase()).as_deref() {
-            Some("all") => ProviderSelection::All,
-            Some("both") => ProviderSelection::Both,
+            Some("all") => Ok(ProviderSelection::All),
+            Some("both") => Ok(ProviderSelection::Both),
             Some(name) => {
                 if let Some(id) = ProviderId::from_cli_name(name) {
-                    ProviderSelection::Single(id)
+                    Ok(ProviderSelection::Single(id))
                 } else {
-                    // Default to claude if unknown
-                    ProviderSelection::Single(ProviderId::Claude)
+                    anyhow::bail!("Unknown provider: '{}'. Use --help to see available providers.", name)
                 }
             }
-            None => ProviderSelection::Single(ProviderId::Claude), // Default to Claude
+            None => Ok(ProviderSelection::Single(ProviderId::Claude)), // Default to Claude
         }
     }
 
@@ -165,7 +164,7 @@ pub async fn run(args: UsageArgs) -> anyhow::Result<()> {
     };
 
     let source_mode = SourceMode::from_str(&args.source).unwrap_or(SourceMode::Auto);
-    let providers = ProviderSelection::from_arg(args.provider.as_deref());
+    let providers = ProviderSelection::from_arg(args.provider.as_deref())?;
     let use_color = !args.no_color && is_terminal();
     let fetch_status = args.status;
 

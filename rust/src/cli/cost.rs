@@ -44,7 +44,7 @@ pub async fn run(args: CostArgs) -> anyhow::Result<()> {
         args.format
     };
 
-    let providers = ProviderSelection::from_arg(args.provider.as_deref());
+    let providers = ProviderSelection::from_arg(args.provider.as_deref())?;
     let use_color = !args.no_color && is_terminal();
     let scanner = CostScanner::new(args.days);
 

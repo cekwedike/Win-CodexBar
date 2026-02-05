@@ -92,6 +92,18 @@ impl CostHistoryChart {
         }
 
         let max_value = self.points.iter().map(|p| p.value).fold(0.0f64, f64::max);
+        let total_value: f64 = self.points.iter().map(|p| p.value).sum();
+
+        // If all values are zero, show empty state instead of invisible chart
+        if total_value == 0.0 {
+            ui.label(
+                RichText::new("No costs recorded yet")
+                    .size(11.0)
+                    .color(Color32::GRAY),
+            );
+            return;
+        }
+
         let peak_index = self.points.iter().enumerate()
             .max_by(|(_, a), (_, b)| a.value.partial_cmp(&b.value).unwrap())
             .map(|(i, _)| i);
@@ -128,10 +140,18 @@ impl CostHistoryChart {
 
         // Draw bars
         for (i, point) in self.points.iter().enumerate() {
+            // Calculate bar height with minimum visibility
             let base_bar_height = if max_value > 0.0 {
-                (point.value / max_value) as f32 * (chart_height - 10.0)
+                let proportional = (point.value / max_value) as f32 * (chart_height - 10.0);
+                // Minimum bar height of 3px if there's any value, so bars are always visible
+                if point.value > 0.0 {
+                    proportional.max(3.0)
+                } else {
+                    // Zero value gets a tiny 1px bar so the chart structure is visible
+                    1.0
+                }
             } else {
-                0.0
+                1.0 // Fallback minimum
             };
 
             // Apply entrance animation with staggered timing

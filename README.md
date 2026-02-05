@@ -13,9 +13,16 @@ A Windows port of [CodexBar](https://github.com/steipete/CodexBar) - the tiny me
 - **CLI Commands**: `codexbar usage` and `codexbar cost` for scripting
 - **Preferences Window**: Enable/disable providers, set refresh intervals, manage cookies
 
-## Screenshot
+## Screenshots
 
-![CodexBar Windows](screenshot.png)
+### Main Window
+![CodexBar Main Window](docs/images/main-window.png)
+
+### Settings
+![CodexBar Settings](docs/images/settings.png)
+
+### Overview
+![CodexBar Overview](docs/images/overview.png)
 
 ## Install
 

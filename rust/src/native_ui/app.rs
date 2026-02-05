@@ -60,9 +60,14 @@ impl ProviderData {
 
         let (cost_used, credits_remaining, credits_percent) = if let Some(ref cost) = result.cost {
             if cost.period == "Credits" {
-                const FULL_SCALE_CREDITS: f64 = 1000.0;
+                // Use the limit from the cost snapshot if available, otherwise default to 1000
+                let scale = cost.limit.unwrap_or(1000.0);
                 let remaining = cost.used;
-                let percent = (remaining / FULL_SCALE_CREDITS * 100.0).clamp(0.0, 100.0);
+                let percent = if scale > 0.0 {
+                    (remaining / scale * 100.0).clamp(0.0, 100.0)
+                } else {
+                    0.0
+                };
                 (None, Some(remaining), Some(percent))
             } else {
                 (
@@ -185,9 +190,19 @@ fn format_reset_time(reset: chrono::DateTime<chrono::Utc>, relative: bool) -> St
         }
     } else {
         // Absolute time format using local timezone
+        // Include date if not today
         use chrono::Local;
         let local_time = reset.with_timezone(&Local);
-        local_time.format("%I:%M %p").to_string()
+        let today = Local::now().date_naive();
+        let reset_date = local_time.date_naive();
+
+        if reset_date == today {
+            local_time.format("%I:%M %p").to_string()
+        } else if reset_date == today + chrono::Days::new(1) {
+            format!("Tomorrow {}", local_time.format("%I:%M %p"))
+        } else {
+            local_time.format("%b %d, %I:%M %p").to_string()
+        }
     }
 }
 
@@ -394,7 +409,13 @@ impl CodexBarApp {
             let update_channel = settings.update_channel;
             let auto_download = settings.auto_download_updates;
             std::thread::spawn(move || {
-                let rt = tokio::runtime::Runtime::new().unwrap();
+                let rt = match tokio::runtime::Runtime::new() {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        tracing::error!("Failed to create tokio runtime for update check: {}", e);
+                        return;
+                    }
+                };
                 rt.block_on(async {
                     if let Some(update) = updater::check_for_updates_with_channel(update_channel).await {
                         let should_download = {
@@ -498,7 +519,16 @@ impl CodexBarApp {
                 s.loading_phase = 0.0;
             }
 
-            let rt = tokio::runtime::Runtime::new().unwrap();
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    tracing::error!("Failed to create tokio runtime: {}", e);
+                    if let Ok(mut s) = state.lock() {
+                        s.is_refreshing = false;
+                    }
+                    return;
+                }
+            };
             rt.block_on(async {
                 // Clear any stale OAuth env vars at the start of refresh
                 // This ensures account switches take effect immediately
@@ -835,7 +865,13 @@ impl eframe::App for CodexBarApp {
                         let state = Arc::clone(&self.state);
                         let update_channel = self.settings.update_channel;
                         std::thread::spawn(move || {
-                            let rt = tokio::runtime::Runtime::new().unwrap();
+                            let rt = match tokio::runtime::Runtime::new() {
+                                Ok(rt) => rt,
+                                Err(e) => {
+                                    tracing::error!("Failed to create runtime: {}", e);
+                                    return;
+                                }
+                            };
                             rt.block_on(async {
                                 if let Some(update) = updater::check_for_updates_with_channel(update_channel).await {
                                     if let Ok(mut s) = state.lock() {

@@ -87,6 +87,8 @@ pub struct PreferencesWindow {
     icon_cache: ProviderIconCache,
     // Shared state for viewport
     shared_state: Arc<Mutex<PreferencesSharedState>>,
+    // Place settings viewport beside the main menu window on next show()
+    needs_viewport_placement: bool,
 }
 
 /// Shared state that can be accessed from viewport
@@ -175,6 +177,7 @@ impl Default for PreferencesWindow {
             browser_import_status: None,
             icon_cache: ProviderIconCache::new(),
             shared_state,
+            needs_viewport_placement: false,
         }
     }
 }
@@ -186,6 +189,7 @@ impl PreferencesWindow {
 
     pub fn open(&mut self) {
         self.is_open = true;
+        self.needs_viewport_placement = true;
         self.settings = Settings::load();
         self.cookies = ManualCookies::load();
         self.api_keys = ApiKeys::load();
@@ -225,6 +229,7 @@ impl PreferencesWindow {
         if let Ok(mut state) = self.shared_state.lock() {
             state.is_open = false;
         }
+        self.needs_viewport_placement = false;
     }
 
     /// Check if a refresh was requested and reset the flag
@@ -253,14 +258,45 @@ impl PreferencesWindow {
 
         let shared_state = Arc::clone(&self.shared_state);
         let settings_viewport_id = egui::ViewportId::from_hash_of("settings_viewport");
+        let work_area = work_area_rect(ctx);
+        let main_outer_rect = ctx.input(|i| i.viewport().outer_rect);
+
+        let preferred_size = egui::vec2(720.0, 740.0);
+        let default_min_size = egui::vec2(520.0, 420.0);
+        let margin = 12.0;
+        let settings_size = if let Some(area) = work_area {
+            let max_w = (area.width() - margin * 2.0).max(360.0);
+            let max_h = (area.height() - margin * 2.0).max(360.0);
+            egui::vec2(preferred_size.x.min(max_w), preferred_size.y.min(max_h))
+        } else {
+            preferred_size
+        };
+        let settings_min_size = egui::vec2(
+            default_min_size.x.min(settings_size.x),
+            default_min_size.y.min(settings_size.y),
+        );
+        let settings_position = if self.needs_viewport_placement {
+            match (main_outer_rect, work_area) {
+                (Some(main_rect), Some(area)) => Some(settings_position_near_main_window(main_rect, settings_size, area)),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        let mut builder = egui::ViewportBuilder::default()
+            .with_title("CodexBar Settings")
+            .with_inner_size([settings_size.x, settings_size.y])
+            .with_min_inner_size([settings_min_size.x, settings_min_size.y])
+            .with_clamp_size_to_monitor_size(true)
+            .with_resizable(true);
+        if let Some(position) = settings_position {
+            builder = builder.with_position(position);
+        }
 
         ctx.show_viewport_immediate(
             settings_viewport_id,
-            egui::ViewportBuilder::default()
-                .with_title("CodexBar Settings")
-                .with_inner_size([720.0, 740.0])
-                .with_min_inner_size([650.0, 580.0])
-                .with_resizable(true),
+            builder,
             |ctx, _class| {
                 // Check if window was closed
                 if ctx.input(|i| i.viewport().close_requested()) {
@@ -288,6 +324,11 @@ impl PreferencesWindow {
                     });
             },
         );
+
+        if settings_position.is_some() {
+            ctx.send_viewport_cmd_to(settings_viewport_id, egui::ViewportCommand::Focus);
+            self.needs_viewport_placement = false;
+        }
 
         // Sync state back from shared state
         if let Ok(state) = self.shared_state.lock() {
@@ -1622,6 +1663,105 @@ impl PreferencesWindow {
             );
         });
     }
+
+}
+
+fn settings_position_near_main_window(main_rect: Rect, settings_size: Vec2, monitor_size: Rect) -> egui::Pos2 {
+    let margin = 12.0;
+    let gap = 12.0;
+
+    let right_space = monitor_size.max.x - main_rect.max.x - gap - margin;
+    let left_space = main_rect.min.x - monitor_size.min.x - gap - margin;
+    let bottom_space = monitor_size.max.y - main_rect.max.y - gap - margin;
+    let top_space = main_rect.min.y - monitor_size.min.y - gap - margin;
+
+    let mut best_side = "right";
+    let mut best_space = right_space;
+    for (side, space) in [
+        ("left", left_space),
+        ("bottom", bottom_space),
+        ("top", top_space),
+    ] {
+        if space > best_space {
+            best_side = side;
+            best_space = space;
+        }
+    }
+
+    let min_x = monitor_size.min.x + margin;
+    let min_y = monitor_size.min.y + margin;
+    let max_x = (monitor_size.max.x - settings_size.x - margin).max(min_x);
+    let max_y = (monitor_size.max.y - settings_size.y - margin).max(min_y);
+    let clamp_x = |value: f32| {
+        if max_x <= min_x {
+            min_x
+        } else {
+            value.clamp(min_x, max_x)
+        }
+    };
+    let clamp_y = |value: f32| {
+        if max_y <= min_y {
+            min_y
+        } else {
+            value.clamp(min_y, max_y)
+        }
+    };
+
+    let (x, y) = match best_side {
+        "right" => (
+            clamp_x(main_rect.max.x + gap),
+            clamp_y(main_rect.min.y),
+        ),
+        "left" => (
+            clamp_x(main_rect.min.x - settings_size.x - gap),
+            clamp_y(main_rect.min.y),
+        ),
+        "bottom" => (
+            clamp_x(main_rect.min.x),
+            clamp_y(main_rect.max.y + gap),
+        ),
+        _ => (
+            clamp_x(main_rect.min.x),
+            clamp_y(main_rect.min.y - settings_size.y - gap),
+        ),
+    };
+
+    egui::pos2(x, y)
+}
+
+fn work_area_rect(ctx: &egui::Context) -> Option<Rect> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::RECT as WinRect;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SystemParametersInfoW, SPI_GETWORKAREA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+        };
+
+        let mut rect = WinRect::default();
+        let ok = unsafe {
+            SystemParametersInfoW(
+                SPI_GETWORKAREA,
+                0,
+                Some((&mut rect as *mut WinRect).cast()),
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+            )
+            .is_ok()
+        };
+
+        if ok {
+            let pixels_per_point = ctx.pixels_per_point().max(0.1);
+            return Some(Rect::from_min_max(
+                egui::pos2(rect.left as f32 / pixels_per_point, rect.top as f32 / pixels_per_point),
+                egui::pos2(rect.right as f32 / pixels_per_point, rect.bottom as f32 / pixels_per_point),
+            ));
+        }
+    }
+
+    ctx.input(|i| {
+        i.viewport()
+            .monitor_size
+            .map(|size| Rect::from_min_size(egui::pos2(0.0, 0.0), size))
+    })
 }
 
 // ════════════════════════════════════════════════════════════════════════════════

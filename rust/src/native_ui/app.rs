@@ -54,6 +54,33 @@ pub struct ProviderData {
 }
 
 impl ProviderData {
+    fn placeholder(id: ProviderId) -> Self {
+        Self {
+            name: id.cli_name().to_string(),
+            display_name: id.display_name().to_string(),
+            account: None,
+            session_percent: None,
+            session_reset: None,
+            weekly_percent: None,
+            weekly_reset: None,
+            model_percent: None,
+            model_name: None,
+            plan: None,
+            error: None,
+            dashboard_url: None,
+            pace_percent: None,
+            pace_lasts_to_reset: false,
+            cost_used: None,
+            credits_remaining: None,
+            credits_percent: None,
+            status_level: StatusLevel::Unknown,
+            status_description: None,
+            cost_history: Vec::new(),
+            credits_history: Vec::new(),
+            usage_breakdown: Vec::new(),
+        }
+    }
+
     fn from_result(id: ProviderId, result: &ProviderFetchResult, metadata: &crate::core::ProviderMetadata, reset_time_relative: bool) -> Self {
         let snapshot = &result.usage;
         let (pace_percent, pace_lasts) = calculate_pace(&snapshot.primary);
@@ -326,6 +353,8 @@ pub struct CodexBarApp {
     shortcut_manager: Option<ShortcutManager>,
     icon_cache: ProviderIconCache,
     was_refreshing: bool, // Track previous frame's refresh state
+    pending_main_window_layout: bool,
+    anchor_main_window_to_pointer: bool,
 }
 
 impl CodexBarApp {
@@ -349,30 +378,7 @@ impl CodexBarApp {
 
         let placeholders: Vec<ProviderData> = enabled_ids
             .iter()
-            .map(|&id| ProviderData {
-                name: id.cli_name().to_string(),
-                display_name: id.display_name().to_string(),
-                account: None,
-                session_percent: None,
-                session_reset: None,
-                weekly_percent: None,
-                weekly_reset: None,
-                model_percent: None,
-                model_name: None,
-                plan: None,
-                error: None,
-                dashboard_url: None,
-                pace_percent: None,
-                pace_lasts_to_reset: false,
-                cost_used: None,
-                credits_remaining: None,
-                credits_percent: None,
-                status_level: StatusLevel::Unknown,
-                status_description: None,
-                cost_history: Vec::new(),
-                credits_history: Vec::new(),
-                usage_breakdown: Vec::new(),
-            })
+            .map(|&id| ProviderData::placeholder(id))
             .collect();
 
         let state = Arc::new(Mutex::new(SharedState {
@@ -500,7 +506,75 @@ impl CodexBarApp {
             shortcut_manager,
             icon_cache: ProviderIconCache::new(),
             was_refreshing: false,
+            pending_main_window_layout: true,
+            anchor_main_window_to_pointer: false,
         }
+    }
+
+    fn layout_main_window(&mut self, ctx: &egui::Context, anchor_to_pointer: bool) {
+        let Some(outer_rect) = ctx.input(|i| i.viewport().outer_rect) else {
+            return;
+        };
+        let Some(work_area) = work_area_rect(ctx) else {
+            return;
+        };
+
+        let margin = 12.0;
+        let gap = 10.0;
+        let min_size = egui::vec2(320.0, 320.0);
+        let max_w = (work_area.width() - margin * 2.0).max(min_size.x);
+        let max_h = (work_area.height() - margin * 2.0).max(min_size.y);
+        let target_size = egui::vec2(360.0_f32.min(max_w), 500.0_f32.min(max_h));
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(target_size));
+
+        let anchor = if anchor_to_pointer {
+            ctx.input(|i| i.pointer.latest_pos())
+        } else {
+            None
+        }
+        .unwrap_or_else(|| outer_rect.center());
+
+        // For tray/shortcut opens, keep the popup on the left side and vertically centered
+        // so it doesn't appear pinned to the taskbar area.
+        let (target_x, target_y) = if anchor_to_pointer {
+            let center_x = work_area.min.x + work_area.width() * 0.22;
+            (
+                center_x - target_size.x * 0.5,
+                work_area.min.y + (work_area.height() - target_size.y) * 0.5,
+            )
+        } else {
+            let space_above = anchor.y - work_area.min.y - margin;
+            let space_below = work_area.max.y - anchor.y - margin;
+            let x = anchor.x - target_size.x * 0.5;
+            let y = if space_below >= target_size.y + gap || space_below >= space_above {
+                anchor.y + gap
+            } else {
+                anchor.y - target_size.y - gap
+            };
+            (x, y)
+        };
+
+        let min_x = work_area.min.x + margin;
+        let min_y = work_area.min.y + margin;
+        let max_x = (work_area.max.x - target_size.x - margin).max(min_x);
+        let max_y = (work_area.max.y - target_size.y - margin).max(min_y);
+        let x = if max_x <= min_x {
+            min_x
+        } else {
+            target_x.clamp(min_x, max_x)
+        };
+        let y = if max_y <= min_y {
+            min_y
+        } else {
+            target_y.clamp(min_y, max_y)
+        };
+
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+
+        self.pending_main_window_layout = false;
+        self.anchor_main_window_to_pointer = false;
     }
 
     fn refresh_providers(&self) {
@@ -517,6 +591,13 @@ impl CodexBarApp {
                 s.is_refreshing = true;
                 s.loading_pattern = LoadingPattern::random();
                 s.loading_phase = 0.0;
+                s.providers = enabled_ids
+                    .iter()
+                    .map(|&id| ProviderData::placeholder(id))
+                    .collect();
+                if s.selected_provider_idx >= s.providers.len() {
+                    s.selected_provider_idx = 0;
+                }
             }
 
             let rt = match tokio::runtime::Runtime::new() {
@@ -673,6 +754,41 @@ impl CodexBarApp {
     }
 }
 
+fn work_area_rect(ctx: &egui::Context) -> Option<Rect> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::RECT as WinRect;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SystemParametersInfoW, SPI_GETWORKAREA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+        };
+
+        let mut rect = WinRect::default();
+        let ok = unsafe {
+            SystemParametersInfoW(
+                SPI_GETWORKAREA,
+                0,
+                Some((&mut rect as *mut WinRect).cast()),
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+            )
+            .is_ok()
+        };
+
+        if ok {
+            let pixels_per_point = ctx.pixels_per_point().max(0.1);
+            return Some(Rect::from_min_max(
+                egui::pos2(rect.left as f32 / pixels_per_point, rect.top as f32 / pixels_per_point),
+                egui::pos2(rect.right as f32 / pixels_per_point, rect.bottom as f32 / pixels_per_point),
+            ));
+        }
+    }
+
+    ctx.input(|i| {
+        i.viewport()
+            .monitor_size
+            .map(|size| Rect::from_min_size(egui::pos2(0.0, 0.0), size))
+    })
+}
+
 fn create_provider(id: ProviderId) -> Box<dyn Provider> {
     match id {
         ProviderId::Claude => Box::new(ClaudeProvider::new()),
@@ -698,13 +814,23 @@ fn create_provider(id: ProviderId) -> Box<dyn Provider> {
 
 impl eframe::App for CodexBarApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Check keyboard shortcuts
-        if let Some(ref shortcut_mgr) = self.shortcut_manager {
+        if self.pending_main_window_layout {
+            self.layout_main_window(ctx, self.anchor_main_window_to_pointer);
+        }
+
+        // Check keyboard shortcuts without holding an immutable borrow of self
+        // while triggering layout changes.
+        let mut shortcut_triggered = false;
+        if let Some(shortcut_mgr) = self.shortcut_manager.as_ref() {
             while shortcut_mgr.check_events() {
-                tracing::info!("Keyboard shortcut triggered - focusing window");
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                shortcut_triggered = true;
             }
+        }
+        if shortcut_triggered {
+            tracing::info!("Keyboard shortcut triggered - focusing window");
+            self.pending_main_window_layout = true;
+            self.anchor_main_window_to_pointer = true;
+            self.layout_main_window(ctx, true);
         }
 
         // Auto-refresh check
@@ -849,7 +975,9 @@ impl eframe::App for CodexBarApp {
                 match action {
                     TrayMenuAction::Quit => std::process::exit(0),
                     TrayMenuAction::Open => {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                        self.pending_main_window_layout = true;
+                        self.anchor_main_window_to_pointer = true;
+                        self.layout_main_window(ctx, true);
                     }
                     TrayMenuAction::Refresh => {
                         if !is_refreshing {
@@ -857,8 +985,10 @@ impl eframe::App for CodexBarApp {
                         }
                     }
                     TrayMenuAction::Settings => {
+                        self.pending_main_window_layout = true;
+                        self.anchor_main_window_to_pointer = true;
+                        self.layout_main_window(ctx, true);
                         self.preferences_window.open();
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                     }
                     TrayMenuAction::CheckForUpdates => {
                         // Trigger update check in background
@@ -1268,9 +1398,41 @@ impl eframe::App for CodexBarApp {
                                     self.preferences_window.open();
                                 }
                             }
+                        } else if is_refreshing {
+                            egui::Frame::none()
+                                .fill(Theme::CARD_BG)
+                                .rounding(Rounding::same(Radius::LG))
+                                .inner_margin(Spacing::XXL)
+                                .stroke(Stroke::new(1.0, Theme::CARD_BORDER))
+                                .show(ui, |ui| {
+                                    ui.vertical_centered(|ui| {
+                                        ui.spinner();
+                                        ui.add_space(Spacing::SM);
+                                        ui.label(
+                                            RichText::new("Loading providers...")
+                                                .size(FontSize::BASE)
+                                                .color(Theme::TEXT_MUTED),
+                                        );
+                                    });
+                                });
+                        } else {
+                            egui::Frame::none()
+                                .fill(Theme::CARD_BG)
+                                .rounding(Rounding::same(Radius::LG))
+                                .inner_margin(Spacing::XXL)
+                                .stroke(Stroke::new(1.0, Theme::CARD_BORDER))
+                                .show(ui, |ui| {
+                                    ui.vertical_centered(|ui| {
+                                        ui.label(
+                                            RichText::new("No provider data available.")
+                                                .size(FontSize::BASE)
+                                                .color(Theme::TEXT_MUTED),
+                                        );
+                                    });
+                                });
                         }
                     } else {
-                        // Loading state
+                        let has_enabled_providers = !self.settings.get_enabled_provider_ids().is_empty();
                         egui::Frame::none()
                             .fill(Theme::CARD_BG)
                             .rounding(Rounding::same(Radius::LG))
@@ -1278,13 +1440,26 @@ impl eframe::App for CodexBarApp {
                             .stroke(Stroke::new(1.0, Theme::CARD_BORDER))
                             .show(ui, |ui| {
                                 ui.vertical_centered(|ui| {
-                                    ui.spinner();
-                                    ui.add_space(Spacing::SM);
-                                    ui.label(
-                                        RichText::new("Loading providers...")
-                                            .size(FontSize::BASE)
-                                            .color(Theme::TEXT_MUTED),
-                                    );
+                                    if has_enabled_providers {
+                                        ui.spinner();
+                                        ui.add_space(Spacing::SM);
+                                        ui.label(
+                                            RichText::new("Loading providers...")
+                                                .size(FontSize::BASE)
+                                                .color(Theme::TEXT_MUTED),
+                                        );
+                                    } else {
+                                        ui.label(
+                                            RichText::new("No providers selected.")
+                                                .size(FontSize::BASE)
+                                                .color(Theme::TEXT_MUTED),
+                                        );
+                                        ui.add_space(Spacing::SM);
+                                        if ui.button("Open Provider Settings").clicked() {
+                                            self.preferences_window.active_tab = super::preferences::PreferencesTab::Providers;
+                                            self.preferences_window.open();
+                                        }
+                                    }
                                 });
                             });
                     }
@@ -1313,8 +1488,23 @@ impl eframe::App for CodexBarApp {
         // Show preferences window
         self.preferences_window.show(ctx);
 
+        let mut refresh_requested = self.preferences_window.take_refresh_requested();
+        let previous_enabled_provider_ids = self.settings.get_enabled_provider_ids();
+
+        // Sync settings first, then refresh so refresh always uses current settings.
+        if self.preferences_window.settings_changed {
+            self.settings = self.preferences_window.settings.clone();
+            if let Err(e) = self.settings.save() {
+                tracing::error!("Failed to save settings: {}", e);
+            }
+            if previous_enabled_provider_ids != self.settings.get_enabled_provider_ids() {
+                refresh_requested = true;
+            }
+            self.preferences_window.settings_changed = false;
+        }
+
         // Check if preferences window requested a provider refresh
-        if self.preferences_window.take_refresh_requested() {
+        if refresh_requested {
             self.refresh_providers();
         }
 
@@ -1326,15 +1516,6 @@ impl eframe::App for CodexBarApp {
                 self.preferences_window.reload_snapshot();
             }
             self.was_refreshing = is_refreshing;
-        }
-
-        // Sync settings - save immediately when changed
-        if self.preferences_window.settings_changed {
-            self.settings = self.preferences_window.settings.clone();
-            if let Err(e) = self.settings.save() {
-                tracing::error!("Failed to save settings: {}", e);
-            }
-            self.preferences_window.settings_changed = false;
         }
     }
 }
@@ -1937,8 +2118,9 @@ pub fn run() -> anyhow::Result<()> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([360.0, 820.0])
-            .with_min_inner_size([320.0, 400.0])
+            .with_inner_size([360.0, 500.0])
+            .with_min_inner_size([320.0, 320.0])
+            .with_clamp_size_to_monitor_size(true)
             .with_resizable(true)
             .with_decorations(true)
             .with_transparent(false)

@@ -171,12 +171,6 @@ impl TrayManager {
 
     /// Update the tray icon based on usage percentages (single provider mode)
     pub fn update_usage(&self, session_percent: f64, weekly_percent: f64, provider_name: &str) {
-        if !self.should_update_usage(session_percent, weekly_percent, provider_name, IconOverlay::None) {
-            return;
-        }
-        let icon = create_bar_icon(session_percent, weekly_percent, IconOverlay::None);
-        let _ = self.tray_icon.set_icon(Some(icon));
-
         let tooltip = format!(
             "{}: Session {}% | Weekly {}%",
             provider_name,
@@ -184,16 +178,17 @@ impl TrayManager {
             weekly_percent as i32
         );
         let _ = self.tray_icon.set_tooltip(Some(&tooltip));
+
+        if !self.should_update_usage(session_percent, weekly_percent, provider_name, IconOverlay::None) {
+            return;
+        }
+
+        let icon = create_bar_icon(session_percent, weekly_percent, IconOverlay::None);
+        let _ = self.tray_icon.set_icon(Some(icon));
     }
 
     /// Update the tray icon with an overlay (error, stale, incident)
     pub fn update_usage_with_overlay(&self, session_percent: f64, weekly_percent: f64, provider_name: &str, overlay: IconOverlay) {
-        if !self.should_update_usage(session_percent, weekly_percent, provider_name, overlay) {
-            return;
-        }
-        let icon = create_bar_icon(session_percent, weekly_percent, overlay);
-        let _ = self.tray_icon.set_icon(Some(icon));
-
         let status_suffix = match overlay {
             IconOverlay::None => "",
             IconOverlay::Error => " (Error)",
@@ -210,6 +205,13 @@ impl TrayManager {
             status_suffix
         );
         let _ = self.tray_icon.set_tooltip(Some(&tooltip));
+
+        if !self.should_update_usage(session_percent, weekly_percent, provider_name, overlay) {
+            return;
+        }
+
+        let icon = create_bar_icon(session_percent, weekly_percent, overlay);
+        let _ = self.tray_icon.set_icon(Some(icon));
     }
 
     /// Show error state on the tray icon
@@ -262,6 +264,14 @@ impl TrayManager {
 
         let signature = Self::merged_signature(providers);
         if self.last_merged_signature.get() == Some(signature) {
+            // Still update tooltip to reflect current data even if icon unchanged
+            let tooltip_lines: Vec<String> = providers
+                .iter()
+                .take(4)
+                .map(|p| format!("{}: {}%", p.name, p.session_percent as i32))
+                .collect();
+            let tooltip = format!("CodexBar\n{}", tooltip_lines.join("\n"));
+            let _ = self.tray_icon.set_tooltip(Some(&tooltip));
             return;
         }
 
@@ -284,6 +294,10 @@ impl TrayManager {
     pub fn show_loading(&self, pattern: LoadingPattern, phase: f64) {
         let primary = pattern.value(phase);
         let secondary = pattern.value(phase + pattern.secondary_offset());
+
+        // Clear signatures so the next real update isn't skipped
+        self.last_usage_signature.set(None);
+        self.last_merged_signature.set(None);
 
         let icon = create_loading_icon(primary, secondary);
         let _ = self.tray_icon.set_icon(Some(icon));
@@ -501,10 +515,9 @@ impl MultiTrayManager {
         if let Some(tray_icon) = self.provider_icons.get(&provider_id) {
             let signature = TrayManager::usage_signature(session_percent, weekly_percent, provider_id.display_name(), IconOverlay::None);
             let mut sigs = self.provider_signatures.borrow_mut();
-            if sigs.get(&provider_id) == Some(&signature) {
-                return;
+            if sigs.get(&provider_id) != Some(&signature) {
+                sigs.insert(provider_id, signature);
             }
-            sigs.insert(provider_id, signature);
 
             let icon = create_bar_icon(session_percent, weekly_percent, IconOverlay::None);
             let _ = tray_icon.set_icon(Some(icon));
@@ -530,10 +543,9 @@ impl MultiTrayManager {
         if let Some(tray_icon) = self.provider_icons.get(&provider_id) {
             let signature = TrayManager::usage_signature(session_percent, weekly_percent, provider_id.display_name(), overlay);
             let mut sigs = self.provider_signatures.borrow_mut();
-            if sigs.get(&provider_id) == Some(&signature) {
-                return;
+            if sigs.get(&provider_id) != Some(&signature) {
+                sigs.insert(provider_id, signature);
             }
-            sigs.insert(provider_id, signature);
 
             let icon = create_bar_icon(session_percent, weekly_percent, overlay);
             let _ = tray_icon.set_icon(Some(icon));

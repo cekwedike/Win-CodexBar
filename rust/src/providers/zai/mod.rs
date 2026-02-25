@@ -128,7 +128,17 @@ impl ZaiProvider {
             )));
         }
 
-        let quota: ZaiQuotaResponse = resp.json().await
+        let resp_bytes = resp.bytes().await
+            .map_err(|e| ProviderError::Other(e.to_string()))?;
+
+        // Handle empty response body (can happen with wrong region/endpoint)
+        if resp_bytes.is_empty() {
+            return Err(ProviderError::Parse(
+                "Empty response body from z.ai API. Check API region and token.".to_string()
+            ));
+        }
+
+        let quota: ZaiQuotaResponse = serde_json::from_slice(&resp_bytes)
             .map_err(|e| ProviderError::Parse(e.to_string()))?;
 
         self.parse_quota_response(&quota)
@@ -146,9 +156,12 @@ impl ZaiProvider {
         // Calculate session (tokens) usage percentage
         let session_percent = if let Some(tokens) = tokens_limit {
             let used = tokens.used.unwrap_or(0.0);
-            let limit = tokens.limit.unwrap_or(1.0);
+            let limit = tokens.limit.unwrap_or(0.0);
             if limit > 0.0 {
                 (used / limit) * 100.0
+            } else if used > 0.0 {
+                // No limit field but usage exists - don't report 0%
+                100.0
             } else {
                 0.0
             }
@@ -159,9 +172,11 @@ impl ZaiProvider {
         // Calculate MCP usage percentage
         let mcp_percent = if let Some(mcp) = mcp_limit {
             let used = mcp.used.unwrap_or(0.0);
-            let limit = mcp.limit.unwrap_or(1.0);
+            let limit = mcp.limit.unwrap_or(0.0);
             if limit > 0.0 {
                 (used / limit) * 100.0
+            } else if used > 0.0 {
+                100.0
             } else {
                 0.0
             }

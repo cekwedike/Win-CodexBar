@@ -26,8 +26,8 @@ impl KimiProvider {
             metadata: ProviderMetadata {
                 id: ProviderId::Kimi,
                 display_name: "Kimi",
-                session_label: "5-Hour",
-                weekly_label: "Weekly",
+                session_label: "Weekly",
+                weekly_label: "Rate Limit",
                 supports_opus: false,
                 supports_credits: false,
                 default_enabled: false,
@@ -157,20 +157,24 @@ impl KimiProvider {
             .and_then(|v| v.as_str())
             .unwrap_or("Kimi");
 
-        // Create primary rate window (5-hour rate limit)
-        let mut primary = RateWindow::new(five_hour_percent);
+        // Create primary rate window (weekly quota - more important for planning)
+        let primary = RateWindow::new(weekly_percent);
+
+        // Create secondary rate window (5-hour rate limit)
+        let mut rate_limit = RateWindow::new(five_hour_percent);
 
         // Calculate reset time (5 hours from now as fallback)
         let five_hours_from_now = chrono::Utc::now() + chrono::Duration::hours(5);
-        primary.resets_at = Some(five_hours_from_now);
-        primary.window_minutes = Some(300); // 5 hours = 300 minutes
-
-        // Create weekly rate window
-        let weekly = RateWindow::new(weekly_percent);
+        rate_limit.resets_at = Some(five_hours_from_now);
+        rate_limit.window_minutes = Some(300); // 5 hours = 300 minutes
 
         let mut usage = UsageSnapshot::new(primary)
-            .with_secondary(weekly)
             .with_login_method(plan);
+
+        // Only add rate limit as secondary if we actually have rate limit data
+        if five_hour_limit > 0.0 {
+            usage = usage.with_secondary(rate_limit);
+        }
 
         if let Some(name) = nickname {
             usage = usage.with_email(name.to_string());

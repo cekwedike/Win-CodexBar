@@ -381,6 +381,7 @@ pub struct CodexBarApp {
     was_refreshing: bool, // Track previous frame's refresh state
     pending_main_window_layout: bool,
     anchor_main_window_to_pointer: bool,
+    test_input_queue: super::test_server::TestInputQueue,
 }
 
 impl CodexBarApp {
@@ -551,6 +552,10 @@ impl CodexBarApp {
             }
         };
 
+        // Initialize test input queue and start server
+        let test_input_queue = super::test_server::create_queue();
+        super::test_server::start_server(test_input_queue.clone());
+
         Self {
             state,
             settings,
@@ -562,6 +567,7 @@ impl CodexBarApp {
             was_refreshing: false,
             pending_main_window_layout: true,
             anchor_main_window_to_pointer: false,
+            test_input_queue,
         }
     }
 
@@ -861,6 +867,9 @@ fn create_provider(id: ProviderId) -> Box<dyn Provider> {
         ProviderId::Kimi => Box::new(KimiProvider::new()),
         ProviderId::KimiK2 => Box::new(KimiK2Provider::new()),
         ProviderId::Amp => Box::new(AmpProvider::new()),
+        ProviderId::Warp => Box::new(WarpProvider::new()),
+        ProviderId::Ollama => Box::new(OllamaProvider::new()),
+        ProviderId::OpenRouter => Box::new(OpenRouterProvider::new()),
         ProviderId::Synthetic => Box::new(SyntheticProvider::new()),
         ProviderId::JetBrains => Box::new(JetBrainsProvider::new()),
     }
@@ -885,6 +894,82 @@ impl eframe::App for CodexBarApp {
             self.pending_main_window_layout = true;
             self.anchor_main_window_to_pointer = true;
             self.layout_main_window(ctx, true);
+        }
+
+        // Process test input queue (for automated testing without moving real cursor)
+        if let Ok(mut queue) = self.test_input_queue.lock() {
+            let mut had_input = false;
+            for input in queue.drain(..) {
+                had_input = true;
+                match input {
+                    super::test_server::TestInput::Click { x, y } => {
+                        let pos = egui::pos2(x, y);
+                        ctx.input_mut(|i| {
+                            // Move pointer to position first (required for hover detection)
+                            i.events.push(egui::Event::PointerMoved(pos));
+                            // Then click
+                            i.events.push(egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Primary,
+                                pressed: true,
+                                modifiers: egui::Modifiers::NONE,
+                            });
+                            i.events.push(egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Primary,
+                                pressed: false,
+                                modifiers: egui::Modifiers::NONE,
+                            });
+                        });
+                        tracing::debug!("Injected test click at ({}, {})", x, y);
+                    }
+                    super::test_server::TestInput::DoubleClick { x, y } => {
+                        let pos = egui::pos2(x, y);
+                        ctx.input_mut(|i| {
+                            // Move pointer to position first
+                            i.events.push(egui::Event::PointerMoved(pos));
+                            for _ in 0..2 {
+                                i.events.push(egui::Event::PointerButton {
+                                    pos,
+                                    button: egui::PointerButton::Primary,
+                                    pressed: true,
+                                    modifiers: egui::Modifiers::NONE,
+                                });
+                                i.events.push(egui::Event::PointerButton {
+                                    pos,
+                                    button: egui::PointerButton::Primary,
+                                    pressed: false,
+                                    modifiers: egui::Modifiers::NONE,
+                                });
+                            }
+                        });
+                        tracing::debug!("Injected test double-click at ({}, {})", x, y);
+                    }
+                    super::test_server::TestInput::RightClick { x, y } => {
+                        let pos = egui::pos2(x, y);
+                        ctx.input_mut(|i| {
+                            // Move pointer to position first
+                            i.events.push(egui::Event::PointerMoved(pos));
+                            i.events.push(egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Secondary,
+                                pressed: true,
+                                modifiers: egui::Modifiers::NONE,
+                            });
+                            i.events.push(egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Secondary,
+                                pressed: false,
+                                modifiers: egui::Modifiers::NONE,
+                            });
+                        });
+                        tracing::debug!("Injected test right-click at ({}, {})", x, y);
+                    }
+                }
+            }
+            if had_input {
+                ctx.request_repaint();
+            }
         }
 
         // Auto-refresh check

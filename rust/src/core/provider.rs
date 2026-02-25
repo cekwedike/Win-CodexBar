@@ -28,6 +28,9 @@ pub enum ProviderId {
     Kimi,
     KimiK2,
     Amp,
+    Warp,
+    Ollama,
+    OpenRouter,
     Synthetic,
     JetBrains,
 }
@@ -52,6 +55,9 @@ impl ProviderId {
             ProviderId::Kimi,
             ProviderId::KimiK2,
             ProviderId::Amp,
+            ProviderId::Warp,
+            ProviderId::Ollama,
+            ProviderId::OpenRouter,
             ProviderId::Synthetic,
             ProviderId::JetBrains,
         ]
@@ -76,6 +82,9 @@ impl ProviderId {
             ProviderId::Kimi => "kimi",
             ProviderId::KimiK2 => "kimik2",
             ProviderId::Amp => "amp",
+            ProviderId::Warp => "warp",
+            ProviderId::Ollama => "ollama",
+            ProviderId::OpenRouter => "openrouter",
             ProviderId::Synthetic => "synthetic",
             ProviderId::JetBrains => "jetbrains",
         }
@@ -100,6 +109,9 @@ impl ProviderId {
             ProviderId::Kimi => "Kimi",
             ProviderId::KimiK2 => "Kimi K2",
             ProviderId::Amp => "Amp",
+            ProviderId::Warp => "Warp",
+            ProviderId::Ollama => "Ollama",
+            ProviderId::OpenRouter => "OpenRouter",
             ProviderId::Synthetic => "Synthetic",
             ProviderId::JetBrains => "JetBrains AI",
         }
@@ -123,12 +135,15 @@ impl ProviderId {
             ProviderId::Augment => Some("app.augmentcode.com"),
             ProviderId::Amp => Some("sourcegraph.com"),
             ProviderId::Antigravity => Some("antigravity.ai"),
+            ProviderId::Ollama => Some("ollama.com"),
             // Token-based providers (don't use cookies)
             ProviderId::Copilot => None,
             ProviderId::Zai => None,
             ProviderId::VertexAI => None,
             ProviderId::JetBrains => None,
             ProviderId::Synthetic => None,
+            ProviderId::Warp => None,
+            ProviderId::OpenRouter => None,
         }
     }
 
@@ -151,6 +166,9 @@ impl ProviderId {
             "kimi" | "moonshot" => Some(ProviderId::Kimi),
             "kimik2" | "kimi-k2" | "k2" => Some(ProviderId::KimiK2),
             "amp" | "sourcegraph" => Some(ProviderId::Amp),
+            "warp" | "warp-ai" | "warp-terminal" => Some(ProviderId::Warp),
+            "ollama" => Some(ProviderId::Ollama),
+            "openrouter" | "or" => Some(ProviderId::OpenRouter),
             "synthetic" => Some(ProviderId::Synthetic),
             "jetbrains" | "jetbrains-ai" | "intellij" => Some(ProviderId::JetBrains),
             _ => None,
@@ -371,6 +389,9 @@ pub fn cli_name_map() -> HashMap<&'static str, ProviderId> {
     map.insert("aws", ProviderId::Kiro);
     map.insert("vertex", ProviderId::VertexAI);
     map.insert("sourcegraph", ProviderId::Amp);
+    map.insert("warp-ai", ProviderId::Warp);
+    map.insert("warp-terminal", ProviderId::Warp);
+    map.insert("or", ProviderId::OpenRouter);
     map
 }
 
@@ -381,7 +402,7 @@ mod tests {
     #[test]
     fn test_provider_id_all() {
         let all = ProviderId::all();
-        assert_eq!(all.len(), 18); // 17 + 1 new provider (JetBrains)
+        assert_eq!(all.len(), 21); // 18 + 3 new providers (Warp, Ollama, OpenRouter)
         assert!(all.contains(&ProviderId::Claude));
         assert!(all.contains(&ProviderId::Codex));
         assert!(all.contains(&ProviderId::Kimi));

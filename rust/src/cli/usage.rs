@@ -7,8 +7,9 @@ use crate::core::{FetchContext, ProviderId, Provider, ProviderFetchResult, Sourc
 use crate::providers::{
     AmpProvider, AntigravityProvider, AugmentProvider, ClaudeProvider, CodexProvider,
     CopilotProvider, CursorProvider, FactoryProvider, GeminiProvider, JetBrainsProvider,
-    KimiProvider, KimiK2Provider, KiroProvider, MiniMaxProvider, OpenCodeProvider,
-    SyntheticProvider, VertexAIProvider, ZaiProvider,
+    KimiProvider, KimiK2Provider, KiroProvider, MiniMaxProvider, OllamaProvider,
+    OpenCodeProvider, OpenRouterProvider, SyntheticProvider, VertexAIProvider, WarpProvider,
+    ZaiProvider,
 };
 use crate::status::{fetch_provider_status, ProviderStatus as StatusInfo, StatusLevel};
 
@@ -150,6 +151,9 @@ fn create_provider(id: ProviderId) -> Box<dyn Provider> {
         ProviderId::Kimi => Box::new(KimiProvider::new()),
         ProviderId::KimiK2 => Box::new(KimiK2Provider::new()),
         ProviderId::Amp => Box::new(AmpProvider::new()),
+        ProviderId::Warp => Box::new(WarpProvider::new()),
+        ProviderId::Ollama => Box::new(OllamaProvider::new()),
+        ProviderId::OpenRouter => Box::new(OpenRouterProvider::new()),
         ProviderId::Synthetic => Box::new(SyntheticProvider::new()),
         ProviderId::JetBrains => Box::new(JetBrainsProvider::new()),
     }

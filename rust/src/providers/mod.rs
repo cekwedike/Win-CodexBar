@@ -16,10 +16,13 @@ pub mod kimi;
 pub mod kimik2;
 pub mod kiro;
 pub mod minimax;
+pub mod ollama;
 pub mod openai;
 pub mod opencode;
+pub mod openrouter;
 pub mod synthetic;
 pub mod vertexai;
+pub mod warp;
 pub mod zai;
 
 // Re-export provider implementations
@@ -37,7 +40,10 @@ pub use kimi::KimiProvider;
 pub use kimik2::KimiK2Provider;
 pub use kiro::KiroProvider;
 pub use minimax::MiniMaxProvider;
+pub use ollama::OllamaProvider;
 pub use opencode::OpenCodeProvider;
+pub use openrouter::OpenRouterProvider;
 pub use synthetic::SyntheticProvider;
 pub use vertexai::VertexAIProvider;
+pub use warp::WarpProvider;
 pub use zai::ZaiProvider;

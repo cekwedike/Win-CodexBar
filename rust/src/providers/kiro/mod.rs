@@ -17,6 +17,8 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::process::Command;
 use regex_lite::Regex;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 use crate::core::{
     FetchContext, Provider, ProviderId, ProviderError, ProviderFetchResult,
@@ -91,11 +93,17 @@ impl KiroProvider {
             ProviderError::NotInstalled("kiro-cli not found. Install from https://kiro.dev".to_string())
         })?;
 
-        let output = Command::new(&cli_path)
-            .arg("whoami")
+        #[cfg(windows)]
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        let mut cmd = Command::new(&cli_path);
+        cmd.arg("whoami")
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let output = cmd.output()
             .await
             .map_err(|e| ProviderError::Other(format!("Failed to run kiro-cli: {}", e)))?;
 
@@ -127,12 +135,18 @@ impl KiroProvider {
         })?;
 
         // Run the usage command
-        let output = Command::new(&cli_path)
-            .args(["chat", "--no-interactive", "/usage"])
+        #[cfg(windows)]
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        let mut cmd = Command::new(&cli_path);
+        cmd.args(["chat", "--no-interactive", "/usage"])
             .env("TERM", "xterm-256color")
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let output = cmd.output()
             .await
             .map_err(|e| ProviderError::Other(format!("Failed to run kiro-cli: {}", e)))?;
 
@@ -145,6 +159,7 @@ impl KiroProvider {
         if lowered.contains("not logged in")
             || lowered.contains("login required")
             || lowered.contains("failed to initialize auth portal")
+            || lowered.contains("kiro-cli login")
             || lowered.contains("oauth error")
         {
             return Err(ProviderError::AuthRequired);
@@ -167,7 +182,7 @@ impl KiroProvider {
             return Err(ProviderError::Parse("Kiro CLI could not retrieve usage information".to_string()));
         }
 
-        // Parse plan name from "| KIRO FREE" or similar
+        // Parse plan name from "| KIRO FREE" or similar (legacy format)
         let mut plan_name = "Kiro".to_string();
         if let Ok(re) = Regex::new(r"\|\s*(KIRO\s+\w+)") {
             if let Some(caps) = re.captures(&stripped) {
@@ -176,6 +191,24 @@ impl KiroProvider {
                 }
             }
         }
+
+        // Parse plan name from "Plan: Q Developer Pro" (new format, kiro-cli 1.24+)
+        let mut matched_new_format = false;
+        if let Ok(re) = Regex::new(r"Plan:\s*(.+)") {
+            if let Some(caps) = re.captures(&stripped) {
+                if let Some(m) = caps.get(1) {
+                    let plan_line = m.as_str().trim();
+                    if let Some(first_line) = plan_line.lines().next() {
+                        plan_name = first_line.trim().to_string();
+                        matched_new_format = true;
+                    }
+                }
+            }
+        }
+
+        // Check if this is a managed plan with no usage data
+        let is_managed_plan = lowered.contains("managed by admin")
+            || lowered.contains("managed by organization");
 
         // Parse reset date from "resets on 01/01"
         let mut reset_date: Option<chrono::DateTime<chrono::Utc>> = None;
@@ -249,8 +282,21 @@ impl KiroProvider {
             }
         }
 
+        // Managed plans in new format may omit usage metrics
+        if matched_new_format && is_managed_plan && !matched_percent && !matched_credits {
+            let usage = UsageSnapshot::new(RateWindow::new(0.0))
+                .with_login_method(&plan_name);
+            return Ok(usage);
+        }
+
         // Require at least some pattern to match
-        if !matched_percent && !matched_credits && plan_name == "Kiro" {
+        if !matched_percent && !matched_credits {
+            if matched_new_format || plan_name != "Kiro" {
+                // We got a plan name but no usage data
+                let usage = UsageSnapshot::new(RateWindow::new(0.0))
+                    .with_login_method(&plan_name);
+                return Ok(usage);
+            }
             // If we have the CLI but can't parse, at least report it's installed
             let usage = UsageSnapshot::new(RateWindow::new(0.0))
                 .with_login_method("Kiro (installed)");

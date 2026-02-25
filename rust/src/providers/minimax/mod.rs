@@ -17,6 +17,13 @@ use crate::core::{
     ProviderMetadata, RateWindow, SourceMode, UsageSnapshot,
 };
 
+/// MiniMax API region
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum MiniMaxRegion {
+    Global,
+    ChinaMainland,
+}
+
 /// MiniMax provider
 pub struct MiniMaxProvider {
     metadata: ProviderMetadata,
@@ -90,27 +97,63 @@ impl MiniMaxProvider {
         Err(ProviderError::AuthRequired)
     }
 
-    /// Fetch usage via MiniMax API
+    /// API base URLs for different regions
+    fn api_base_url(region: MiniMaxRegion) -> &'static str {
+        match region {
+            MiniMaxRegion::Global => "https://api.minimax.io",
+            MiniMaxRegion::ChinaMainland => "https://api.minimaxi.com",
+        }
+    }
+
+    /// Fetch usage via MiniMax API with region fallback
     async fn fetch_via_web(&self) -> Result<UsageSnapshot, ProviderError> {
         let (group_id, api_key) = self.read_api_key().await?;
 
+        // Try global endpoint first, fall back to China mainland on 401/403
+        match self.fetch_from_region(&group_id, &api_key, MiniMaxRegion::Global).await {
+            Ok(usage) => Ok(usage),
+            Err(ProviderError::AuthRequired) => {
+                // Retry with China mainland endpoint
+                self.fetch_from_region(&group_id, &api_key, MiniMaxRegion::ChinaMainland).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Fetch from a specific region endpoint
+    async fn fetch_from_region(
+        &self,
+        group_id: &str,
+        api_key: &str,
+        region: MiniMaxRegion,
+    ) -> Result<UsageSnapshot, ProviderError> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| ProviderError::Other(e.to_string()))?;
 
-        // MiniMax billing API
+        let base_url = Self::api_base_url(region);
         let resp = client
             .get(format!(
-                "https://api.minimax.chat/v1/billing/usage?group_id={}",
-                group_id
+                "{}/v1/billing/usage?group_id={}",
+                base_url, group_id
             ))
             .header("Authorization", format!("Bearer {}", api_key))
+            .header("MM-API-Source", "CodexBar")
             .send()
             .await?;
 
-        if !resp.status().is_success() {
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED
+            || resp.status() == reqwest::StatusCode::FORBIDDEN
+        {
             return Err(ProviderError::AuthRequired);
+        }
+
+        if !resp.status().is_success() {
+            return Err(ProviderError::Other(format!(
+                "MiniMax API returned status {}",
+                resp.status()
+            )));
         }
 
         let json: serde_json::Value = resp.json().await

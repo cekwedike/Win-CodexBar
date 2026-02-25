@@ -706,6 +706,24 @@ pub fn get_api_key_providers() -> Vec<ProviderConfigInfo> {
             config_file_path: None,
             dashboard_url: Some("https://z.ai/dashboard"),
         },
+        ProviderConfigInfo {
+            id: ProviderId::Warp,
+            name: "Warp",
+            requires_api_key: true,
+            api_key_env_var: Some("WARP_API_KEY"),
+            api_key_help: Some("Get your API key from Warp → Settings → API Keys (docs.warp.dev/reference/cli/api-keys)"),
+            config_file_path: None,
+            dashboard_url: Some("https://docs.warp.dev/reference/cli/api-keys"),
+        },
+        ProviderConfigInfo {
+            id: ProviderId::OpenRouter,
+            name: "OpenRouter",
+            requires_api_key: true,
+            api_key_env_var: Some("OPENROUTER_API_KEY"),
+            api_key_help: Some("Get your API key from openrouter.ai/settings/keys"),
+            config_file_path: None,
+            dashboard_url: Some("https://openrouter.ai/settings/credits"),
+        },
     ]
 }
 
@@ -762,7 +780,7 @@ mod tests {
     fn test_settings_get_all_providers_status() {
         let settings = Settings::default();
         let status = settings.get_all_providers_status();
-        assert_eq!(status.len(), 18); // All 18 providers
+        assert_eq!(status.len(), 21); // All 21 providers
 
         let claude_status = status.iter().find(|s| s.id == "claude").unwrap();
         assert_eq!(claude_status.name, "Claude");

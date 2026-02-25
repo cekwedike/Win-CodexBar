@@ -112,7 +112,10 @@ impl TokenAccountSupport {
             | ProviderId::KimiK2
             | ProviderId::Amp
             | ProviderId::Synthetic
-            | ProviderId::JetBrains => None,
+            | ProviderId::JetBrains
+            | ProviderId::Warp
+            | ProviderId::Ollama
+            | ProviderId::OpenRouter => None,
         }
     }
 

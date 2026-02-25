@@ -103,6 +103,9 @@ impl WeeklyIndicatorColors {
             ProviderId::Amp => (233, 30, 99, 255),       // Pink
             ProviderId::Synthetic => (158, 158, 158, 255), // Gray
             ProviderId::JetBrains => (255, 128, 0, 255),  // JetBrains orange
+            ProviderId::Warp => (1, 217, 166, 255),       // Warp teal
+            ProviderId::Ollama => (255, 255, 255, 255),    // Ollama white
+            ProviderId::OpenRouter => (110, 65, 226, 255), // OpenRouter purple
         }
     }
 

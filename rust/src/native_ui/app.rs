@@ -2,6 +2,7 @@
 //! Clean, spacious design with rich visual hierarchy
 
 use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, Rect, RichText, Rounding, Stroke, Vec2};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -26,6 +27,30 @@ use crate::shortcuts::{parse_shortcut, ShortcutManager};
 use crate::status::{fetch_provider_status, get_status_page_url, StatusLevel};
 use crate::tray::{LoadingPattern, ProviderUsage, SurpriseAnimation, TrayMenuAction, UnifiedTrayManager};
 use crate::updater::{self, UpdateInfo, UpdateState};
+
+#[cfg(windows)]
+fn restore_main_window() {
+    use windows::core::w;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW,
+    };
+
+    unsafe {
+        if let Ok(hwnd) = FindWindowW(None, w!("CodexBar")) {
+            if !hwnd.is_invalid() {
+                if IsIconic(hwnd).as_bool() {
+                    let _ = ShowWindow(hwnd, SW_RESTORE);
+                } else {
+                    let _ = ShowWindow(hwnd, SW_SHOW);
+                }
+                let _ = SetForegroundWindow(hwnd);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn restore_main_window() {}
 
 #[derive(Clone, Debug)]
 pub struct ProviderData {
@@ -349,6 +374,7 @@ pub struct CodexBarApp {
     state: Arc<Mutex<SharedState>>,
     settings: Settings,
     tray_manager: Option<UnifiedTrayManager>,
+    tray_action_rx: Option<Receiver<TrayMenuAction>>,
     preferences_window: PreferencesWindow,
     shortcut_manager: Option<ShortcutManager>,
     icon_cache: ProviderIconCache,
@@ -407,6 +433,33 @@ impl CodexBarApp {
                 tracing::warn!("Failed to create tray manager: {}", e);
                 None
             }
+        };
+        let tray_action_rx = if tray_manager.is_some() {
+            let (tx, rx) = mpsc::channel::<TrayMenuAction>();
+            let repaint_ctx = cc.egui_ctx.clone();
+            std::thread::spawn(move || loop {
+                if let Some(action) = UnifiedTrayManager::check_events() {
+                    if matches!(
+                        action,
+                        TrayMenuAction::Open | TrayMenuAction::Settings | TrayMenuAction::Refresh
+                    ) {
+                        // Egui viewport commands alone can be ignored while minimized.
+                        // Force a native restore first so the update loop wakes up.
+                        restore_main_window();
+                        repaint_ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                        repaint_ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    }
+                    if tx.send(action).is_err() {
+                        break;
+                    }
+                    repaint_ctx.request_repaint();
+                } else {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            });
+            Some(rx)
+        } else {
+            None
         };
 
         // Check for updates in background (using configured update channel)
@@ -502,6 +555,7 @@ impl CodexBarApp {
             state,
             settings,
             tray_manager,
+            tray_action_rx,
             preferences_window: PreferencesWindow::new(),
             shortcut_manager,
             icon_cache: ProviderIconCache::new(),
@@ -971,7 +1025,13 @@ impl eframe::App for CodexBarApp {
                 }
             }
 
-            if let Some(action) = UnifiedTrayManager::check_events() {
+            let mut tray_actions = Vec::new();
+            if let Some(ref action_rx) = self.tray_action_rx {
+                while let Ok(action) = action_rx.try_recv() {
+                    tray_actions.push(action);
+                }
+            }
+            for action in tray_actions {
                 match action {
                     TrayMenuAction::Quit => std::process::exit(0),
                     TrayMenuAction::Open => {
@@ -982,6 +1042,8 @@ impl eframe::App for CodexBarApp {
                     TrayMenuAction::Refresh => {
                         if !is_refreshing {
                             self.refresh_providers();
+                            // Ensure animations advance even if window is hidden/minimized.
+                            ctx.request_repaint();
                         }
                     }
                     TrayMenuAction::Settings => {

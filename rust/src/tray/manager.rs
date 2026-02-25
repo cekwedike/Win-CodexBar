@@ -5,7 +5,9 @@
 #![allow(dead_code)]
 
 use image::{ImageBuffer, Rgba, RgbaImage};
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::hash::{Hash, Hasher};
 use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu, CheckMenuItem},
     Icon, TrayIcon, TrayIconBuilder,
@@ -64,7 +66,7 @@ impl SurpriseAnimation {
 }
 
 /// Icon overlay types for status indicators
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub enum IconOverlay {
     /// No overlay - normal display
     #[default]
@@ -94,6 +96,8 @@ pub struct TrayManager {
     tray_icon: TrayIcon,
     /// Provider menu items for updating with status prefixes
     provider_menu_items: HashMap<ProviderId, CheckMenuItem>,
+    last_usage_signature: Cell<Option<u64>>,
+    last_merged_signature: Cell<Option<u64>>,
 }
 
 impl TrayManager {
@@ -157,14 +161,16 @@ impl TrayManager {
             .with_icon(icon)
             .build()?;
 
-        Ok(Self { tray_icon, provider_menu_items })
+        Ok(Self {
+            tray_icon,
+            provider_menu_items,
+            last_usage_signature: Cell::new(None),
+            last_merged_signature: Cell::new(None),
+        })
     }
 
     /// Update the tray icon based on usage percentages (single provider mode)
     pub fn update_usage(&self, session_percent: f64, weekly_percent: f64, provider_name: &str) {
-        let icon = create_bar_icon(session_percent, weekly_percent, IconOverlay::None);
-        let _ = self.tray_icon.set_icon(Some(icon));
-
         let tooltip = format!(
             "{}: Session {}% | Weekly {}%",
             provider_name,
@@ -172,13 +178,17 @@ impl TrayManager {
             weekly_percent as i32
         );
         let _ = self.tray_icon.set_tooltip(Some(&tooltip));
+
+        if !self.should_update_usage(session_percent, weekly_percent, provider_name, IconOverlay::None) {
+            return;
+        }
+
+        let icon = create_bar_icon(session_percent, weekly_percent, IconOverlay::None);
+        let _ = self.tray_icon.set_icon(Some(icon));
     }
 
     /// Update the tray icon with an overlay (error, stale, incident)
     pub fn update_usage_with_overlay(&self, session_percent: f64, weekly_percent: f64, provider_name: &str, overlay: IconOverlay) {
-        let icon = create_bar_icon(session_percent, weekly_percent, overlay);
-        let _ = self.tray_icon.set_icon(Some(icon));
-
         let status_suffix = match overlay {
             IconOverlay::None => "",
             IconOverlay::Error => " (Error)",
@@ -195,6 +205,13 @@ impl TrayManager {
             status_suffix
         );
         let _ = self.tray_icon.set_tooltip(Some(&tooltip));
+
+        if !self.should_update_usage(session_percent, weekly_percent, provider_name, overlay) {
+            return;
+        }
+
+        let icon = create_bar_icon(session_percent, weekly_percent, overlay);
+        let _ = self.tray_icon.set_icon(Some(icon));
     }
 
     /// Show error state on the tray icon
@@ -245,6 +262,19 @@ impl TrayManager {
             return;
         }
 
+        let signature = Self::merged_signature(providers);
+        if self.last_merged_signature.get() == Some(signature) {
+            // Still update tooltip to reflect current data even if icon unchanged
+            let tooltip_lines: Vec<String> = providers
+                .iter()
+                .take(4)
+                .map(|p| format!("{}: {}%", p.name, p.session_percent as i32))
+                .collect();
+            let tooltip = format!("CodexBar\n{}", tooltip_lines.join("\n"));
+            let _ = self.tray_icon.set_tooltip(Some(&tooltip));
+            return;
+        }
+
         let icon = create_merged_icon(providers);
         let _ = self.tray_icon.set_icon(Some(icon));
 
@@ -256,12 +286,18 @@ impl TrayManager {
             .collect();
         let tooltip = format!("CodexBar\n{}", tooltip_lines.join("\n"));
         let _ = self.tray_icon.set_tooltip(Some(&tooltip));
+
+        self.last_merged_signature.set(Some(signature));
     }
 
     /// Show loading animation on the tray icon
     pub fn show_loading(&self, pattern: LoadingPattern, phase: f64) {
         let primary = pattern.value(phase);
         let secondary = pattern.value(phase + pattern.secondary_offset());
+
+        // Clear signatures so the next real update isn't skipped
+        self.last_usage_signature.set(None);
+        self.last_merged_signature.set(None);
 
         let icon = create_loading_icon(primary, secondary);
         let _ = self.tray_icon.set_icon(Some(icon));
@@ -339,6 +375,41 @@ impl TrayManager {
     }
 }
 
+impl TrayManager {
+    fn usage_signature(session_percent: f64, weekly_percent: f64, provider_name: &str, overlay: IconOverlay) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        let session_tenths = (session_percent * 10.0).round() as i32;
+        let weekly_tenths = (weekly_percent * 10.0).round() as i32;
+        session_tenths.hash(&mut hasher);
+        weekly_tenths.hash(&mut hasher);
+        provider_name.hash(&mut hasher);
+        overlay.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn should_update_usage(&self, session_percent: f64, weekly_percent: f64, provider_name: &str, overlay: IconOverlay) -> bool {
+        let signature = Self::usage_signature(session_percent, weekly_percent, provider_name, overlay);
+        if self.last_usage_signature.get() == Some(signature) {
+            return false;
+        }
+        self.last_usage_signature.set(Some(signature));
+        true
+    }
+
+    fn merged_signature(providers: &[ProviderUsage]) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        providers.len().hash(&mut hasher);
+        for p in providers.iter().take(8) {
+            p.name.hash(&mut hasher);
+            let session_tenths = (p.session_percent * 10.0).round() as i32;
+            let weekly_tenths = (p.weekly_percent * 10.0).round() as i32;
+            session_tenths.hash(&mut hasher);
+            weekly_tenths.hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+}
+
 /// Tray menu actions
 #[derive(Debug, Clone)]
 pub enum TrayMenuAction {
@@ -355,6 +426,7 @@ pub enum TrayMenuAction {
 pub struct MultiTrayManager {
     /// Map of provider ID to their individual tray icon
     provider_icons: HashMap<ProviderId, TrayIcon>,
+    provider_signatures: RefCell<HashMap<ProviderId, u64>>,
 }
 
 impl MultiTrayManager {
@@ -362,6 +434,7 @@ impl MultiTrayManager {
     pub fn new() -> anyhow::Result<Self> {
         Ok(Self {
             provider_icons: HashMap::new(),
+            provider_signatures: RefCell::new(HashMap::new()),
         })
     }
 
@@ -371,6 +444,7 @@ impl MultiTrayManager {
         // Remove icons for providers that are no longer enabled
         let enabled_set: std::collections::HashSet<_> = enabled_providers.iter().collect();
         self.provider_icons.retain(|id, _| enabled_set.contains(id));
+        self.provider_signatures.borrow_mut().retain(|id, _| enabled_set.contains(id));
 
         // Add icons for newly enabled providers
         for provider_id in enabled_providers {
@@ -439,6 +513,12 @@ impl MultiTrayManager {
     /// Update a specific provider's tray icon
     pub fn update_provider(&self, provider_id: ProviderId, session_percent: f64, weekly_percent: f64) {
         if let Some(tray_icon) = self.provider_icons.get(&provider_id) {
+            let signature = TrayManager::usage_signature(session_percent, weekly_percent, provider_id.display_name(), IconOverlay::None);
+            let mut sigs = self.provider_signatures.borrow_mut();
+            if sigs.get(&provider_id) != Some(&signature) {
+                sigs.insert(provider_id, signature);
+            }
+
             let icon = create_bar_icon(session_percent, weekly_percent, IconOverlay::None);
             let _ = tray_icon.set_icon(Some(icon));
 
@@ -461,6 +541,12 @@ impl MultiTrayManager {
         overlay: IconOverlay,
     ) {
         if let Some(tray_icon) = self.provider_icons.get(&provider_id) {
+            let signature = TrayManager::usage_signature(session_percent, weekly_percent, provider_id.display_name(), overlay);
+            let mut sigs = self.provider_signatures.borrow_mut();
+            if sigs.get(&provider_id) != Some(&signature) {
+                sigs.insert(provider_id, signature);
+            }
+
             let icon = create_bar_icon(session_percent, weekly_percent, overlay);
             let _ = tray_icon.set_icon(Some(icon));
 
@@ -1260,5 +1346,43 @@ mod tests {
         let _icon = create_bar_icon(50.0, 25.0, IconOverlay::Stale);
         let _icon = create_bar_icon(50.0, 25.0, IconOverlay::Incident);
         let _icon = create_bar_icon(50.0, 25.0, IconOverlay::Partial);
+    }
+
+    #[test]
+    fn test_usage_signature_detects_changes() {
+        let sig1 = TrayManager::usage_signature(10.0, 20.0, "Claude", IconOverlay::None);
+        let sig1_repeat = TrayManager::usage_signature(10.0, 20.0, "Claude", IconOverlay::None);
+        let sig_overlay = TrayManager::usage_signature(10.0, 20.0, "Claude", IconOverlay::Error);
+        let sig_provider = TrayManager::usage_signature(10.0, 20.0, "Codex", IconOverlay::None);
+        let sig_values = TrayManager::usage_signature(11.0, 20.0, "Claude", IconOverlay::None);
+
+        assert_eq!(sig1, sig1_repeat, "same inputs should yield same signature");
+        assert_ne!(sig1, sig_overlay, "overlay changes should change signature");
+        assert_ne!(sig1, sig_provider, "provider name changes should change signature");
+        assert_ne!(sig1, sig_values, "usage values changes should change signature");
+    }
+
+    #[test]
+    fn test_merged_signature_tracks_list_content() {
+        let providers_a = vec![
+            ProviderUsage { name: "Claude".into(), session_percent: 10.0, weekly_percent: 20.0 },
+            ProviderUsage { name: "Codex".into(), session_percent: 30.0, weekly_percent: 40.0 },
+        ];
+        let providers_b = vec![
+            ProviderUsage { name: "Claude".into(), session_percent: 10.0, weekly_percent: 20.0 },
+            ProviderUsage { name: "Codex".into(), session_percent: 30.0, weekly_percent: 50.0 },
+        ];
+        let providers_c = vec![
+            ProviderUsage { name: "Claude".into(), session_percent: 10.0, weekly_percent: 20.0 },
+        ];
+
+        let sig_a1 = TrayManager::merged_signature(&providers_a);
+        let sig_a2 = TrayManager::merged_signature(&providers_a);
+        let sig_b = TrayManager::merged_signature(&providers_b);
+        let sig_c = TrayManager::merged_signature(&providers_c);
+
+        assert_eq!(sig_a1, sig_a2, "same provider list should yield stable signature");
+        assert_ne!(sig_a1, sig_b, "value change should alter signature");
+        assert_ne!(sig_a1, sig_c, "length/content change should alter signature");
     }
 }

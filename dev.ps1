@@ -97,14 +97,17 @@ if (-not $SkipBuild) {
 
 # ── Run ──────────────────────────────────────────────────────────────────────
 
-if ($Release) {
-    $binary = Join-Path $RustDir "target\release\codexbar.exe"
-} else {
-    $binary = Join-Path $RustDir "target\debug\codexbar.exe"
-}
+# Binary may be under target/<profile> or target/<triple>/<profile>
+$profile = if ($Release) { "release" } else { "debug" }
+$candidates = @(
+    (Join-Path $RustDir "target\$profile\codexbar.exe"),
+    (Join-Path $RustDir "target\x86_64-pc-windows-gnu\$profile\codexbar.exe")
+)
+$binary = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 
-if (-not (Test-Path $binary)) {
-    Write-Host "ERROR: Binary not found at $binary" -ForegroundColor Red
+if (-not $binary) {
+    Write-Host "ERROR: Binary not found. Searched:" -ForegroundColor Red
+    $candidates | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
     Write-Host "Run without -SkipBuild to build first." -ForegroundColor Yellow
     exit 1
 }

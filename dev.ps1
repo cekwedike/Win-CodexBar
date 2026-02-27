@@ -17,10 +17,10 @@
     Pass -v to CodexBar for debug logging.
 
 .EXAMPLE
-    .\start.ps1                  # debug build + run
-    .\start.ps1 -Release         # release build + run
-    .\start.ps1 -SkipBuild       # run last build
-    .\start.ps1 -Verbose         # debug build + run with verbose logging
+    .\dev.ps1                  # debug build + run
+    .\dev.ps1 -Release         # release build + run
+    .\dev.ps1 -SkipBuild       # run last build
+    .\dev.ps1 -Verbose         # debug build + run with verbose logging
 #>
 
 param(
@@ -34,6 +34,15 @@ $ErrorActionPreference = 'Stop'
 
 $RepoRoot = $PSScriptRoot
 $RustDir = Join-Path $RepoRoot "rust"
+
+# ── Ensure known tool paths are in current session PATH ─────────────────────
+
+$knownPaths = @("$env:USERPROFILE\.cargo\bin", "C:\mingw64\bin")
+foreach ($p in $knownPaths) {
+    if ((Test-Path $p) -and ($env:PATH -notlike "*$p*")) {
+        $env:PATH = "$p;$env:PATH"
+    }
+}
 
 # ── Check prerequisites ─────────────────────────────────────────────────────
 

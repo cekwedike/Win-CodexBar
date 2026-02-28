@@ -128,5 +128,5 @@ if ($allOk) {
     Write-Host "   cd rust" -ForegroundColor White
     Write-Host "   cargo build" -ForegroundColor White
 } else {
-    Write-Host "Some tools are missing. Restart your terminal and re-run this script." -ForegroundColor Yellow
+    Write-Host 'Some tools are missing. Restart your terminal and re-run this script.' -ForegroundColor Yellow
 }

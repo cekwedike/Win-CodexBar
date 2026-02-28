@@ -207,13 +207,25 @@ impl NotificationManager {
         use std::os::windows::process::CommandExt;
         use std::process::Command;
 
-        // Use PowerShell to show a toast notification
+        // Escape for XML content to prevent injection
+        fn xml_escape(s: &str) -> String {
+            s.replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('"', "&quot;")
+                .replace('\'', "&apos;")
+        }
+
+        let safe_title = xml_escape(title);
+        let safe_body = xml_escape(body);
+
+        // Use single-quoted here-string (@'...'@) to prevent PowerShell variable expansion
         let script = format!(
             r#"
             [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
             [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
 
-            $template = @"
+            $template = @'
             <toast>
                 <visual>
                     <binding template="ToastText02">
@@ -222,15 +234,15 @@ impl NotificationManager {
                     </binding>
                 </visual>
             </toast>
-"@
+'@
 
             $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
             $xml.LoadXml($template)
             $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("CodexBar").Show($toast)
             "#,
-            title.replace('"', "'"),
-            body.replace('"', "'")
+            safe_title,
+            safe_body
         );
 
         let _ = Command::new("powershell")

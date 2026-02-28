@@ -83,6 +83,9 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 aes-gcm = "0.10"
 base64 = "0.22"
 
+# Hashing for update verification
+sha2 = "0.10"
+
 # Secure credential storage
 keyring = "3"
 

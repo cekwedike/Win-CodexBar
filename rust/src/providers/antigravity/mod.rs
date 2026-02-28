@@ -6,6 +6,8 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::process::Command;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use regex_lite::Regex;
 
 use crate::core::{
@@ -39,13 +41,19 @@ impl AntigravityProvider {
     /// Detect running Antigravity language server and extract connection info
     fn detect_process_info() -> Result<ProcessInfo, ProviderError> {
         // Use PowerShell to get process command lines
-        let output = Command::new("powershell.exe")
-            .args([
+        #[cfg(windows)]
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        let mut cmd = Command::new("powershell.exe");
+        cmd.args([
                 "-ExecutionPolicy", "Bypass",
                 "-Command",
                 "Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*language_server_windows*' } | Select-Object -ExpandProperty CommandLine"
-            ])
-            .output()
+            ]);
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let output = cmd.output()
             .map_err(|e| ProviderError::Other(format!("Failed to run PowerShell: {}", e)))?;
 
         if !output.status.success() {
@@ -90,9 +98,13 @@ impl AntigravityProvider {
     async fn find_api_port(extension_port: u16) -> Result<u16, ProviderError> {
         // The language server listens on multiple ports near the extension port
         // Try ports in range extension_port to extension_port + 20
+        // SECURITY: TLS verification is disabled because the local language server uses
+        // self-signed certificates. This is scoped to 127.0.0.1 only and the port range
+        // is limited. We verify the server responds with the expected gRPC endpoint.
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(2))
             .danger_accept_invalid_certs(true)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| ProviderError::Other(e.to_string()))?;
 
@@ -139,9 +151,11 @@ impl AntigravityProvider {
         let process_info = Self::detect_process_info()?;
         let api_port = Self::find_api_port(process_info.extension_port).await?;
 
+        // SECURITY: TLS verification disabled for local language server (see find_api_port)
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(8))
             .danger_accept_invalid_certs(true)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| ProviderError::Other(e.to_string()))?;
 

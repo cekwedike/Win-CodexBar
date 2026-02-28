@@ -159,7 +159,12 @@ impl CodexApi {
 
         if let Ok(content) = std::fs::read_to_string(&config_path) {
             if let Some(base_url) = parse_chatgpt_base_url(&content) {
-                return normalize_base_url(&base_url);
+                let normalized = normalize_base_url(&base_url);
+                // Only allow HTTPS URLs for custom base URLs to prevent token exfiltration
+                if normalized.starts_with("https://") || normalized.starts_with("http://127.0.0.1") || normalized.starts_with("http://localhost") {
+                    return normalized;
+                }
+                tracing::warn!("Ignoring insecure custom chatgpt_base_url (must be HTTPS): {}", normalized);
             }
         }
 

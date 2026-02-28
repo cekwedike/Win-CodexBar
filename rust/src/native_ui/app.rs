@@ -381,6 +381,7 @@ pub struct CodexBarApp {
     was_refreshing: bool, // Track previous frame's refresh state
     pending_main_window_layout: bool,
     anchor_main_window_to_pointer: bool,
+    #[cfg(debug_assertions)]
     test_input_queue: super::test_server::TestInputQueue,
 }
 
@@ -552,9 +553,13 @@ impl CodexBarApp {
             }
         };
 
-        // Initialize test input queue and start server
-        let test_input_queue = super::test_server::create_queue();
-        super::test_server::start_server(test_input_queue.clone());
+        // Initialize test input queue and start server (debug builds only)
+        #[cfg(debug_assertions)]
+        let test_input_queue = {
+            let q = super::test_server::create_queue();
+            super::test_server::start_server(q.clone());
+            q
+        };
 
         Self {
             state,
@@ -567,6 +572,7 @@ impl CodexBarApp {
             was_refreshing: false,
             pending_main_window_layout: true,
             anchor_main_window_to_pointer: false,
+            #[cfg(debug_assertions)]
             test_input_queue,
         }
     }
@@ -896,7 +902,8 @@ impl eframe::App for CodexBarApp {
             self.layout_main_window(ctx, true);
         }
 
-        // Process test input queue (for automated testing without moving real cursor)
+        // Process test input queue (debug builds only - for automated testing without moving real cursor)
+        #[cfg(debug_assertions)]
         if let Ok(mut queue) = self.test_input_queue.lock() {
             let mut had_input = false;
             for input in queue.drain(..) {

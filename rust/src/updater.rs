@@ -254,10 +254,75 @@ pub async fn download_update(
         .await
         .map_err(|e| format!("Failed to flush file: {}", e))?;
 
+    // Verify download integrity using SHA256 checksum from release
+    verify_download_hash(&client, &update_info.download_url, &file_path).await?;
+
     // Signal download complete
     let _ = progress_tx.send(UpdateState::Ready(file_path.clone()));
 
     Ok(file_path)
+}
+
+/// Verify the SHA256 hash of a downloaded file against a .sha256 sidecar file
+async fn verify_download_hash(
+    client: &reqwest::Client,
+    download_url: &str,
+    file_path: &PathBuf,
+) -> Result<(), String> {
+    use sha2::{Sha256, Digest};
+
+    let hash_url = format!("{}.sha256", download_url);
+
+    let hash_resp = client
+        .get(&hash_url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch checksum: {}", e))?;
+
+    if !hash_resp.status().is_success() {
+        tracing::warn!(
+            "No SHA256 checksum file found at {}. Skipping verification — consider publishing a .sha256 sidecar.",
+            hash_url
+        );
+        return Ok(());
+    }
+
+    let expected_hash = hash_resp
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read checksum: {}", e))?;
+
+    // Parse hash (format: "hash  filename" or just "hash")
+    let expected = expected_hash
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+
+    if expected.len() != 64 {
+        return Err(format!("Invalid SHA256 hash length: {} chars", expected.len()));
+    }
+
+    let file_bytes = tokio::fs::read(file_path)
+        .await
+        .map_err(|e| format!("Failed to read downloaded file for hashing: {}", e))?;
+
+    let mut hasher = Sha256::new();
+    hasher.update(&file_bytes);
+    let actual = format!("{:x}", hasher.finalize());
+
+    if actual != expected {
+        // Delete the corrupted file
+        let _ = tokio::fs::remove_file(file_path).await;
+        return Err(format!(
+            "SHA256 mismatch: expected {}, got {}. Download may be corrupted or tampered.",
+            expected, actual
+        ));
+    }
+
+    tracing::info!("SHA256 verification passed for {:?}", file_path);
+    Ok(())
 }
 
 /// Start background download of an update

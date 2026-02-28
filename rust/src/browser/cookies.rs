@@ -236,6 +236,7 @@ impl CookieExtractor {
         use windows::Win32::Security::Cryptography::{
             CryptUnprotectData, CRYPT_INTEGER_BLOB,
         };
+        use windows::Win32::Foundation::{LocalFree, HLOCAL};
 
         unsafe {
             let mut input_blob = CRYPT_INTEGER_BLOB {
@@ -273,9 +274,8 @@ impl CookieExtractor {
                 std::slice::from_raw_parts(output_blob.pbData, output_blob.cbData as usize)
                     .to_vec();
 
-            // Note: We should free the memory with LocalFree, but for simplicity
-            // we'll let the OS reclaim it when the process exits.
-            // In a long-running app, we'd want to properly free this.
+            // Free the DPAPI-allocated buffer to prevent memory leaks
+            let _ = LocalFree(HLOCAL(output_blob.pbData as *mut _));
 
             Ok(decrypted)
         }
@@ -305,10 +305,9 @@ impl CookieExtractor {
         if has_v10_prefix || has_v11_prefix {
             let prefix = &encrypted_value[0..3];
             tracing::debug!(
-                "Decrypting cookie with {} prefix, {} bytes total, key[0..4]={:02x?}",
+                "Decrypting cookie with {} prefix, {} bytes total",
                 String::from_utf8_lossy(prefix),
                 encrypted_value.len(),
-                &key[..4.min(key.len())]
             );
 
             // v10/v11: 3 byte prefix + 12 byte nonce + ciphertext + 16 byte tag
@@ -328,9 +327,8 @@ impl CookieExtractor {
                 })?;
 
             tracing::debug!(
-                "Decrypted {} bytes, first 10: {:02x?}",
+                "Decrypted {} bytes successfully",
                 plaintext.len(),
-                &plaintext[..plaintext.len().min(10)]
             );
 
             // Modern Chromium (127+) adds a 32-byte prefix to the plaintext

@@ -1,8 +1,11 @@
+// Hide console window on Windows
+#![windows_subsystem = "windows"]
+
 //! CodexBar - Windows system tray app for monitoring AI provider usage limits
 //!
 //! This is a Rust port of the macOS CodexBar application, providing:
-//! - System tray icon with usage status (via `codexbar menubar`)
-//! - CLI for querying usage from terminal (default command)
+//! - System tray icon with usage status (default when double-clicking)
+//! - CLI for querying usage from terminal (`codexbar usage`)
 //! - Support for multiple AI providers (Claude, Codex, Gemini, etc.)
 
 mod browser;
@@ -26,12 +29,62 @@ mod updater;
 use clap::Parser;
 use cli::{exit_codes, Cli, Commands};
 
+/// Redact sensitive CLI arguments (tokens, keys, cookies) from log output
+fn redact_sensitive_args(args: &[String]) -> Vec<String> {
+    let sensitive_flags = ["--token", "--api-key", "--key", "--cookie", "--password"];
+    let mut result = Vec::with_capacity(args.len());
+    let mut redact_next = false;
+    for arg in args {
+        if redact_next {
+            result.push("[REDACTED]".to_string());
+            redact_next = false;
+        } else if sensitive_flags.iter().any(|f| arg.starts_with(f)) {
+            if arg.contains('=') {
+                let prefix = arg.split('=').next().unwrap_or(arg);
+                result.push(format!("{}=[REDACTED]", prefix));
+            } else {
+                result.push(arg.clone());
+                redact_next = true;
+            }
+        } else {
+            result.push(arg.clone());
+        }
+    }
+    result
+}
+
 fn main() {
+    // Log immediately at program start (redact sensitive args)
+    let log_path = std::env::temp_dir().join("codexbar_launch.log");
+    let args: Vec<String> = std::env::args().collect();
+    let redacted_args = redact_sensitive_args(&args);
+    let _ = std::fs::write(&log_path, format!("main() started at {:?}\nArgs: {:?}\n",
+        std::time::SystemTime::now(),
+        redacted_args
+    ));
+
     let exit_code = run();
+
+    let _ = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&log_path)
+        .and_then(|mut f| {
+            use std::io::Write;
+            writeln!(f, "Exiting with code: {}", exit_code)
+        });
+
     std::process::exit(exit_code);
 }
 
 fn run() -> i32 {
+    // Log to file immediately for debugging
+    let log_path = std::env::temp_dir().join("codexbar_launch.log");
+    let mut log = String::new();
+    log.push_str(&format!("Starting at {:?}\n", std::time::SystemTime::now()));
+    let args: Vec<String> = std::env::args().collect();
+    log.push_str(&format!("Args: {:?}\n", redact_sensitive_args(&args)));
+    let _ = std::fs::write(&log_path, &log);
+
     let cli = Cli::parse();
 
     // Initialize logging
@@ -125,17 +178,27 @@ fn run() -> i32 {
             })
         }
         None => {
-            // Default: run usage command with args from top-level CLI
-            let args = cli.to_usage_args();
-            rt.block_on(async {
-                match cli::usage::run(args).await {
-                    Ok(()) => exit_codes::SUCCESS,
-                    Err(e) => {
-                        eprintln!("Error: {}", e);
-                        categorize_error(&e)
-                    }
+            // Default: launch menubar GUI
+            // Log to file since we can't see console output
+            let log_path = std::env::temp_dir().join("codexbar_launch.log");
+            let _ = std::fs::write(&log_path, format!("Starting at {:?}\n", std::time::SystemTime::now()));
+
+            let _guard = match single_instance::SingleInstanceGuard::try_acquire() {
+                Some(guard) => guard,
+                None => {
+                    let _ = std::fs::write(&log_path, "Already running, exiting\n");
+                    return exit_codes::SUCCESS;
                 }
-            })
+            };
+
+            let _ = std::fs::write(&log_path, "Launching native_ui::run()\n");
+            match native_ui::run() {
+                Ok(()) => exit_codes::SUCCESS,
+                Err(e) => {
+                    let _ = std::fs::write(&log_path, format!("native_ui error: {:?}\n", e));
+                    exit_codes::UNEXPECTED_FAILURE
+                }
+            }
         }
     }
 }

@@ -24,13 +24,44 @@ A Windows port of [CodexBar](https://github.com/steipete/CodexBar) - the tiny me
 ### Overview
 ![CodexBar Overview](docs/images/overview.png)
 
-## Install
+## Getting Started
+
+### Quick Start (from source)
+
+```powershell
+# Clone and run — prerequisites are installed automatically
+git clone https://github.com/Finesssee/Win-CodexBar.git
+cd Win-CodexBar
+.\dev.ps1
+```
+
+This will:
+1. Check for Rust and MinGW-w64, install them if missing
+2. Build CodexBar in debug mode
+3. Launch the system tray app
+
+Other options:
+```powershell
+.\dev.ps1 -Release         # optimised build
+.\dev.ps1 -Verbose         # debug logging
+.\dev.ps1 -SkipBuild       # run last build without rebuilding
+```
 
 ### Download
+
 Download the latest release from [GitHub Releases](https://github.com/Finesssee/Win-CodexBar/releases).
 
-### Build from Source
-```bash
+### Manual Build
+
+Prerequisites: Rust 1.70+ with `x86_64-pc-windows-gnu` target, MinGW-w64.
+Install them automatically with:
+
+```powershell
+.\scripts\setup-windows.ps1
+```
+
+Then build:
+```powershell
 cd rust
 cargo build --release
 # Binary at: target/release/codexbar.exe
@@ -39,7 +70,7 @@ cargo build --release
 ## Usage
 
 ### GUI (System Tray)
-```bash
+```powershell
 codexbar menubar
 ```
 

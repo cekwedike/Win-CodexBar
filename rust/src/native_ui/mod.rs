@@ -6,6 +6,7 @@ mod app;
 mod charts;
 mod preferences;
 mod provider_icons;
+pub(crate) mod test_server;
 mod theme;
 
 pub use app::run;
